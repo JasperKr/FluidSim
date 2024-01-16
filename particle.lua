@@ -42,22 +42,85 @@ function particleFunctions:update(dt)
 end
 
 function particleFunctions:draw()
-    local velocity = length(self.velocityX, self.velocityY)
-    local gradientMax = 1000
+    if Settings.debugDraw then
+        local velocity = length(self.velocityX, self.velocityY)
+        local gradientMax = 1000
 
-    local r = velocity / gradientMax       --0.2
-    local g = self.density * 10            --0.3
-    local b = 0.6 - velocity / gradientMax --0.6
+        local r = velocity / gradientMax       --0.2
+        local g = self.density * 10            --0.3
+        local b = 0.6 - velocity / gradientMax --0.6
 
-    love.graphics.setColor(r, g, b, 1)
+        love.graphics.setColor(r, g, b, 1)
 
-    local img = Settings.gradientImage
+        love.graphics.circle("fill", self.x, self.y, self.radius)
+    else
+        local r = 0.2
+        local g = 0.3
+        local b = 0.6
 
-    --love.graphics.draw(img, self.x, self.y, 0, self.radius * 2 * Settings.drawRadius / img:getWidth(),
-    --    self.radius * 2 * Settings.drawRadius / img:getHeight(),
-    --    img:getWidth() / 2, img:getHeight() / 2)
+        love.graphics.setColor(r, g, b, 1)
 
-    love.graphics.circle("fill", self.x, self.y, self.radius)
+        local img = Settings.gradientImage
+
+        love.graphics.draw(img, self.x, self.y, 0, self.radius * 2 * Settings.drawRadius / img:getWidth(),
+            self.radius * 2 * Settings.drawRadius / img:getHeight(),
+            img:getWidth() / 2, img:getHeight() / 2)
+    end
+end
+
+function circleInAABB(minX, minY, maxX, maxY, px, py, radius)
+    return px >= minX - radius and px <= maxX + radius and py >= minY - radius and py <= maxY + radius
+end
+
+---  distance between point and AABB and edge point
+--- @param minX number
+--- @param minY number
+--- @param maxX number
+--- @param maxY number
+--- @param px number
+--- @param py number
+---@return number distance
+---@return number edgeX
+---@return number edgeY
+---@return number diffX
+---@return number diffY
+---@return number sign
+local function pointAABBDistanceSqr(minX, minY, maxX, maxY, px, py)
+    local dx, dy = 0, 0
+
+    if px < minX then
+        dx = minX - px
+    elseif px > maxX then
+        dx = maxX - px
+    end
+
+    if py < minY then
+        dy = minY - py
+    elseif py > maxY then
+        dy = maxY - py
+    end
+
+    -- if we're inside, get the signed distance to the nearest edge
+    if dx == 0 and dy == 0 then
+        local distToX = math.min(math.abs(px - minX), math.abs(maxX - px))
+        local distToY = math.min(math.abs(py - minY), math.abs(maxY - py))
+
+        if distToX < distToY then
+            local edge = px < (minX + maxX) / 2 and minX or maxX
+
+            dx = px - edge
+
+            return dx * dx, edge, py, dx, 0, -1
+        else
+            local edge = py < (minY + maxY) / 2 and minY or maxY
+
+            dy = py - edge
+
+            return dy * dy, px, edge, 0, dy, -1
+        end
+    end
+
+    return dx * dx + dy * dy, px + dx, py + dy, dx, dy, 1
 end
 
 function particleFunctions:resolveCollisions()
@@ -100,40 +163,44 @@ function particleFunctions:resolveCollisions()
 
     for _, hull in ipairs(Hulls) do
         -- test collision with hull using particleCollisionShape
-        particleCollisionShape.body:setPosition(self.x, self.y)
 
-        local dist, x1, y1, x2, y2 = love.physics.getDistance(particleCollisionShape.fixture, hull.fixture)
-        local dx, dy = x2 - x1, y2 - y1
+        local localPosX, localPosY = hull.body:getLocalPoint(self.x, self.y)
 
-        if dist < self.radius or hull.shape:testPoint(hull.body:getX(), hull.body:getY(), hull.body:getAngle(), self.x, self.y) then
-            local normalX, normalY = normalize(dx, dy)
+        local minX, minY, maxX, maxY = hull.shape:computeAABB(0, 0, 0)
 
-            if normalX == 0 and normalY == 0 then
-                local dx = hull.body:getX() - self.x
-                local dy = hull.body:getY() - self.y
-                normalX, normalY = normalize(dx, dy)
+        if circleInAABB(minX, minY, maxX, maxY, localPosX, localPosY, self.radius) then
+            local dist, intersectionX, intersectionY, diffX, diffY, sign = pointAABBDistanceSqr(
+                minX,
+                minY,
+                maxX,
+                maxY,
+                localPosX,
+                localPosY
+            )
+
+            intersectionX, intersectionY = hull.body:getWorldPoint(intersectionX, intersectionY)
+
+
+            if dist <= self.radius * self.radius or sign < 0 then -- collision or inside
+                local normalX, normalY = normalize(diffX, diffY)
+                normalX, normalY = hull.body:getWorldVector(normalX, normalY)
+
+                local overlap = -math.sqrt(dist) * sign
+
+                self.x = self.x - normalX * overlap
+                self.y = self.y - normalY * overlap
+
+                local forceInDirection = dot(self.velocityX, self.velocityY, normalX, normalY)
+
+                local fx = normalX * forceInDirection * 0.5
+                local fy = normalY * forceInDirection * 0.5
+
+                self.velocityX = self.velocityX - fx
+                self.velocityY = self.velocityY - fy
+
+                hull.body:applyLinearImpulse(fx * Settings.fluidMass * self.mass, fy * Settings.fluidMass * self.mass,
+                    intersectionX, intersectionY)
             end
-
-            local overlap = self.radius - dist
-
-            local intersectionX = self.x
-            local intersectionY = self.y
-
-            self.x = self.x - normalX * overlap
-            self.y = self.y - normalY * overlap
-
-            local forceInDirection = dot(self.velocityX, self.velocityY, normalX, normalY)
-
-            local fx = normalX * forceInDirection
-            local fy = normalY * forceInDirection
-
-            self.velocityX = self.velocityX - fx
-            self.velocityY = self.velocityY - fy
-
-            hull.body:applyLinearImpulse(fx * Settings.fluidMass * self.mass, fy * Settings.fluidMass * self.mass,
-                intersectionX, intersectionY)
-
-            self.wasInHull = true
         end
     end
 end

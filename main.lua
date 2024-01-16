@@ -3,14 +3,15 @@ function love.load()
         gravity = 10,
         scale = 100, -- 100 pixels = 1 meter
         smoothingRadius = 50,
-        targetDensity = 2,
-        pressureMultiplier = 2000,
+        targetDensity = 1.5,
+        pressureMultiplier = 3000,
         viscosity = 11,
         drawRadius = 10,
         mainCanvas = love.graphics.newCanvas(love.graphics.getWidth(), love.graphics.getHeight(), { format = "rgba32f" }),
         waterEffectShader = love.graphics.newShader("waterEffect.glsl"),
         substeps = 1,
-        fluidMass = 0.005,
+        fluidMass = 0.001,
+        debugDraw = false
     }
     Settings.chunkSize = Settings.smoothingRadius
     Settings.inverseChunkSize = 1 / Settings.chunkSize
@@ -29,10 +30,10 @@ function love.load()
 
     Particles = {}
 
-    for x = -30, 30 do
-        for y = -20, 20 do
-            newParticle(x * 10 + love.graphics.getWidth() / 2 + love.math.random(),
-                y * 10 + love.graphics.getHeight() / 2 + love.math.random(), 5, 0.8)
+    for x = -40, 40 do
+        for y = -30, 30 do
+            newParticle(x * 12 + love.graphics.getWidth() / 2 + love.math.random(),
+                y * 12 + love.graphics.getHeight() / 2 + love.math.random(), 5, 0.8)
         end
     end
 
@@ -55,10 +56,11 @@ function love.load()
     ---@type {[1]: hull}
     Hulls = {}
 
-    local body = love.physics.newBody(Box2DWorld, love.graphics.getWidth() / 2 - 100, 300,
-        "dynamic")
+    local body = love.physics.newBody(Box2DWorld, love.graphics.getWidth() - 100, love.graphics.getHeight() / 2,
+        "static")
 
-    local vertices = { -150, -50, 150, -50, 150, 50, -150, 50 }
+    local w, h = 100, 1500
+    local vertices = { -w / 2, -h / 2, w / 2, -h / 2, w / 2, h / 2, -w / 2, h / 2 }
 
     local shape = love.physics.newPolygonShape(unpack(vertices))
 
@@ -86,6 +88,8 @@ function love.update(dt)
     Box2DWorld:update(dt)
 
     local substepDt = dt / Settings.substeps
+    love.graphics.setCanvas(Settings.mainCanvas)
+    love.graphics.clear(0, 0, 0, 1)
     for substep = 1, Settings.substeps do -- update particles
         for i, particle in ipairs(Particles) do
             particle.predictedX = particle.x + particle.velocityX * 0.0083333333
@@ -106,10 +110,12 @@ function love.update(dt)
             particle:update(substepDt)
         end
     end
+    love.graphics.setCanvas()
 
     do -- update hulls
         for i, hull in ipairs(Hulls) do
             hull:update(dt)
+            hull.body:setPosition(love.mouse.getPosition())
         end
     end
 
@@ -128,7 +134,6 @@ function love.draw()
     do -- draw fluid
         love.graphics.setColor(1, 1, 1, 1)
         love.graphics.setCanvas(Settings.mainCanvas)
-        love.graphics.clear(0, 0, 0, 1)
         love.graphics.setBlendMode("add", "premultiplied")
         for i, particle in ipairs(Particles) do
             particle:draw()
@@ -136,9 +141,13 @@ function love.draw()
         love.graphics.setBlendMode("alpha")
         love.graphics.setCanvas()
         love.graphics.setColor(1, 1, 1, 1)
-        --love.graphics.setShader(Settings.waterEffectShader)
+        if not Settings.debugDraw then
+            love.graphics.setShader(Settings.waterEffectShader)
+        end
         love.graphics.draw(Settings.mainCanvas)
-        --love.graphics.setShader()
+        if not Settings.debugDraw then
+            love.graphics.setShader()
+        end
     end
 
     do -- draw hulls
