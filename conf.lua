@@ -4,7 +4,7 @@ function love.conf(t)
     t.version = "12.0"                  -- The LÖVE version this game was made for (string)
     t.console = false                   -- Attach a console (boolean, Windows only)
     t.accelerometerjoystick = true      -- Enable the accelerometer on iOS and Android by exposing it as a Joystick (boolean)
-    t.externalstorage = false           -- True to save files (and read from the save directory) in external storage on Android (boolean)
+    t.externalstorage = false           -- True to save files (and read from the save directory) in external storage on Android
     t.gammacorrect = false              -- Enable gamma-correct rendering, when supported by the system (boolean)
     t.highdpi = false                   -- Enable high-dpi mode for the window on a Retina display (boolean)
 
@@ -44,7 +44,7 @@ function love.conf(t)
     t.modules.sound = true              -- Enable the sound module (boolean)
     t.modules.system = true             -- Enable the system module (boolean)
     t.modules.thread = true             -- Enable the thread module (boolean)
-    t.modules.timer = true              -- Enable the timer module (boolean), Disabling it will result 0 delta time in love.update
+    t.modules.timer = true              -- Enable the timer module (boolean), Disabling it will result 0 delta time in update
     t.modules.touch = true              -- Enable the touch module (boolean)
     t.modules.video = true              -- Enable the video module (boolean)
     t.modules.window = true             -- Enable the window module (boolean)
