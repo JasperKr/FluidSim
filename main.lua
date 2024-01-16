@@ -2,60 +2,74 @@ function love.load()
     Settings = {
         gravity = 1,
         scale = 100, -- 100 pixels = 1 meter
-        smoothingRadius = 50,
+        smoothingRadius = 40,
         targetDensity = 0.0001,
-        pressureMultiplier = 200000,
+        pressureMultiplier = 800000,
+        viscosity = 0.1,
     }
     Settings.chunkSize = Settings.smoothingRadius
     Settings.inverseChunkSize = 1 / Settings.chunkSize
+    Settings.gravity = Settings.gravity * Settings.scale
     require("tables")
     require("quadtree")
     require("particle")
+    require("vec")
 
     Particles = {}
 
-    for x = -20, 20 do
-        for y = -20, 20 do
-            newParticle(x * 10 + love.graphics.getWidth() / 2 + love.math.random(),
-                y * 10 + love.graphics.getHeight() / 2 + love.math.random(), 5, 0.8)
-        end
-    end
+    --for x = -30, 30 do
+    --    for y = -30, 30 do
+    --        newParticle(x * 10 + love.graphics.getWidth() / 2 + love.math.random(),
+    --            y * 10 + love.graphics.getHeight() / 2 + love.math.random(), 5, 0.8)
+    --    end
+    --end
 
     SpatialLookup = {}
     StartIndices = {}
 end
 
 function love.update(dt)
+    newParticle(love.graphics.getWidth() / 2 + love.math.random() * 100 - 50,
+        love.graphics.getHeight() / 2 + love.math.random() * 100 - 50, 5, 0.8)
+    timings = {}
+    local startTime = love.timer.getTime()
     for i, particle in ipairs(Particles) do
-        particle.predictedX = particle.x + particle.velocityX * dt
-        particle.predictedY = particle.y + particle.velocityY * dt
+        particle.predictedX = particle.x + particle.velocityX / 120
+        particle.predictedY = particle.y + particle.velocityY / 120
     end
+    table.insert(timings, { time = love.timer.getTime() - startTime, name = "predict" })
+    startTime = love.timer.getTime()
     updateSpatialLookup()
+    table.insert(timings, { time = love.timer.getTime() - startTime, name = "lookup" })
+    startTime = love.timer.getTime()
     updateParticleDensities()
+    table.insert(timings, { time = love.timer.getTime() - startTime, name = "density" })
+    startTime = love.timer.getTime()
     for i, particle in ipairs(Particles) do
         local pressureX, pressureY = calculatePressureForce(particle)
-        particle.velocityX = particle.velocityX - pressureX * dt * particle.inverseDensity
-        particle.velocityY = particle.velocityY - pressureY * dt * particle.inverseDensity
+        local viscosityX, viscosityY = calculateViscosityForce(particle)
+        particle.velocityX = particle.velocityX -
+            (pressureX - viscosityX * Settings.viscosity) * dt * particle.inverseDensity
+        particle.velocityY = particle.velocityY -
+            (pressureY - viscosityY * Settings.viscosity) * dt * particle.inverseDensity
     end
+    table.insert(timings, { time = love.timer.getTime() - startTime, name = "pressure" })
+    startTime = love.timer.getTime()
     for i, particle in ipairs(Particles) do
         particle:update(dt)
     end
-    if love.keyboard.isDown("e") then
-        Settings.gravity = Settings.gravity + 1 * dt
-    end
-    if love.keyboard.isDown("q") then
-        Settings.gravity = Settings.gravity - 1 * dt
+    table.insert(timings, { time = love.timer.getTime() - startTime, name = "update" })
+
+    if love.mouse.isDown(1, 2) then
+        for i, particle in ipairs(Particles) do
+            local force = updateMouseForces(500, love.mouse.isDown(2) and -5000 or 5000, particle)
+            particle.velocityX = particle.velocityX + force.x * dt
+            particle.velocityY = particle.velocityY + force.y * dt
+        end
     end
 end
 
 function love.draw()
-    love.graphics.setColor(1, 1, 1, 0.3)
-    local particlesInRadius, checkedPoints = getPointsInRadius(love.mouse.getPosition())
-    love.graphics.circle("line", love.mouse.getX(), love.mouse.getY(), Settings.smoothingRadius)
-    love.graphics.setColor(1, 0, 0, 0.8)
-    for i, particle in ipairs(checkedPoints) do
-        love.graphics.circle("line", particle.x, particle.y, particle.radius + 3)
-    end
     love.graphics.setColor(1, 1, 1, 0.3)
     for i, particle in ipairs(Particles) do
         particle:draw()
@@ -63,6 +77,30 @@ function love.draw()
     love.graphics.setColor(1, 1, 1)
     love.graphics.print(calculateDensity(love.mouse.getPosition()))
     love.graphics.print("FPS" .. love.timer.getFPS(), 0, 20)
+
+    for i, timing in ipairs(timings) do
+        love.graphics.print(timing.name .. ": " .. timing.time, 0, 20 * i + 20)
+    end
+end
+
+function updateMouseForces(radius, strength, particle)
+    local mousePos = vec2(love.mouse.getPosition())
+
+    local force = vec2()
+    local offset = mousePos - vec2(particle.x, particle.y)
+
+    local distSqr = offset:lengthSqr()
+
+    if distSqr < radius * radius then
+        local dist = math.sqrt(distSqr)
+        local dir = dist <= 0.0001 and vec2() or offset / dist
+
+        local centerT = 1 - dist / radius
+
+        force = (dir * strength - vec2(particle.velocityX, particle.velocityY)) * centerT
+    end
+
+    return force
 end
 
 function smoothingFunction(radius, distance)
@@ -98,7 +136,15 @@ function calculateDensity(x, y)
     local density = 0
     local mass = 1
 
-    for index, particle in ipairs(Particles) do
+    local particles
+    if type(x) == "number" then
+        particles = getPointsInRadius(x, y)
+    else
+        particles = x.pointsInRadius
+        y = x.predictedY
+        x = x.predictedX
+    end
+    for index, particle in ipairs(particles) do
         local distance = length(x - particle.x, y - particle.y)
         local influence = smoothingFunction(Settings.smoothingRadius, distance)
 
@@ -108,36 +154,12 @@ function calculateDensity(x, y)
     return density
 end
 
-function calculateProperty(x, y)
-    local property = 0
-
-    local mass = 1
-
-    for index, particle in ipairs(Particles) do
-        local distance = length(x - particle.x, y - particle.y)
-        local influence = smoothingFunction(Settings.smoothingRadius, distance)
-        local density = calculateDensity(x, y)
-
-        if density <= 0.000001 then
-            goto continue
-        end
-
-        property = property + particle.property * influence * mass / density
-
-        ::continue::
-    end
-
-    return property
-end
-
 function calculatePressureForce(sampleParticle)
     local pressureX, pressureY = 0, 0
 
     local mass = 1
 
-    local particles = getPointsInRadius(sampleParticle.predictedX, sampleParticle.predictedY)
-
-    for loopIndex, particle in ipairs(particles) do
+    for loopIndex, particle in ipairs(sampleParticle.pointsInRadius) do
         if particle == sampleParticle then
             goto continue
         end
@@ -166,7 +188,7 @@ end
 
 function updateParticleDensities()
     for index, particle in ipairs(Particles) do
-        particle.density = calculateDensity(particle.predictedX, particle.predictedY)
+        particle.density = calculateDensity(particle)
         if particle.density <= 0.000001 then
             particle.inverseDensity = 0
             goto continue
@@ -224,6 +246,9 @@ function updateSpatialLookup()
             StartIndices[key] = index
         end
     end
+    for index, particle in ipairs(Particles) do
+        particle.pointsInRadius = getPointsInRadius(particle.predictedX, particle.predictedY)
+    end
 end
 
 function getPointsInRadius(x, y)
@@ -232,7 +257,6 @@ function getPointsInRadius(x, y)
     local centerX, centerY = positionToChunkCoord(x, y)
 
     local points = {}
-    local checkedPoints = {}
 
     for chunkX = centerX - 1, centerX + 1 do
         for chunkY = centerY - 1, centerY + 1 do
@@ -249,8 +273,6 @@ function getPointsInRadius(x, y)
                     local distSqr = (particle.predictedX - x) * (particle.predictedX - x) +
                         (particle.predictedY - y) * (particle.predictedY - y)
 
-                    table.insert(checkedPoints, particle)
-
                     if distSqr < radiusSqr then
                         table.insert(points, particle)
                     end
@@ -259,5 +281,33 @@ function getPointsInRadius(x, y)
         end
     end
 
-    return points, checkedPoints
+    return points
+end
+
+function viscositySmoothingFunction(distance, radius)
+    if distance > radius then
+        return 0
+    end
+
+    local volume = math.pi * math.pow(radius, 8) / 4;
+    local value = radius * radius - distance * distance
+    return value * value * value / volume
+end
+
+function calculateViscosityForce(particle)
+    local forceX, forceY = 0, 0
+    local x, y = particle.predictedX, particle.predictedY
+
+    for index, otherParticle in ipairs(particle.pointsInRadius) do
+        local dx = x - particle.predictedX
+        local dy = y - particle.predictedY
+
+        local distance = length(dx, dy)
+
+        local influence = viscositySmoothingFunction(distance, Settings.smoothingRadius)
+        forceX = forceX + influence * (otherParticle.velocityX - particle.velocityX)
+        forceY = forceY + influence * (otherParticle.velocityY - particle.velocityY)
+    end
+
+    return forceX, forceY
 end
