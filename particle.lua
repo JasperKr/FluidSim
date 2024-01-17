@@ -14,13 +14,13 @@ do -- create particle collision shape
     }
 end
 
-function newParticle(x, y, radius, restitution)
+function newParticle(x, y, restitution)
     local self = {
         x = x,
         y = y,
         velocityX = 0,
         velocityY = 0,
-        radius = radius,
+        radius = Settings.particleRadius,
         restitution = restitution or 0.9,
         property = 0,
         density = 1,
@@ -85,7 +85,7 @@ end
 ---@return number diffX
 ---@return number diffY
 ---@return number sign
-local function pointAABBDistanceSqr(minX, minY, maxX, maxY, px, py)
+function pointAABBDistanceSqr(minX, minY, maxX, maxY, px, py)
     local dx, dy = 0, 0
 
     if px < minX then
@@ -141,66 +141,5 @@ function particleFunctions:resolveCollisions()
     elseif maxY > love.graphics.getHeight() then
         self.y = love.graphics.getHeight() - self.radius
         self.velocityY = -math.abs(self.velocityY) * self.restitution
-    end
-
-    local wallProximityForceMultiplier = 30
-
-    if minX < 10 then
-        self.velocityX = self.velocityX + (10 - minX) * wallProximityForceMultiplier
-    end
-
-    if maxX > love.graphics.getWidth() - 10 then
-        self.velocityX = self.velocityX - (maxX - love.graphics.getWidth() + 10) * wallProximityForceMultiplier
-    end
-
-    if minY < 10 then
-        self.velocityY = self.velocityY + (10 - minY) * wallProximityForceMultiplier
-    end
-
-    if maxY > love.graphics.getHeight() - 10 then
-        self.velocityY = self.velocityY - (maxY - love.graphics.getHeight() + 10) * wallProximityForceMultiplier
-    end
-
-    for _, hull in ipairs(Hulls) do
-        -- test collision with hull using particleCollisionShape
-
-        local localPosX, localPosY = hull.body:getLocalPoint(self.x, self.y)
-
-        local minX, minY, maxX, maxY = hull.shape:computeAABB(0, 0, 0)
-
-        if circleInAABB(minX, minY, maxX, maxY, localPosX, localPosY, self.radius) then
-            local dist, intersectionX, intersectionY, diffX, diffY, sign = pointAABBDistanceSqr(
-                minX,
-                minY,
-                maxX,
-                maxY,
-                localPosX,
-                localPosY
-            )
-
-            intersectionX, intersectionY = hull.body:getWorldPoint(intersectionX, intersectionY)
-
-
-            if dist <= self.radius * self.radius or sign < 0 then -- collision or inside
-                local normalX, normalY = normalize(diffX, diffY)
-                normalX, normalY = hull.body:getWorldVector(normalX, normalY)
-
-                local overlap = -math.sqrt(dist) * sign
-
-                self.x = self.x - normalX * overlap
-                self.y = self.y - normalY * overlap
-
-                local forceInDirection = dot(self.velocityX, self.velocityY, normalX, normalY)
-
-                local fx = normalX * forceInDirection * 0.5
-                local fy = normalY * forceInDirection * 0.5
-
-                self.velocityX = self.velocityX - fx
-                self.velocityY = self.velocityY - fy
-
-                hull.body:applyLinearImpulse(fx * Settings.fluidMass * self.mass, fy * Settings.fluidMass * self.mass,
-                    intersectionX, intersectionY)
-            end
-        end
     end
 end

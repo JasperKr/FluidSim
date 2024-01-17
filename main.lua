@@ -10,8 +10,9 @@ function love.load()
         mainCanvas = love.graphics.newCanvas(love.graphics.getWidth(), love.graphics.getHeight(), { format = "rgba32f" }),
         waterEffectShader = love.graphics.newShader("waterEffect.glsl"),
         substeps = 1,
-        fluidMass = 0.001,
-        debugDraw = false
+        fluidMass = 0.005,
+        debugDraw = false,
+        particleRadius = 5
     }
     Settings.chunkSize = Settings.smoothingRadius
     Settings.inverseChunkSize = 1 / Settings.chunkSize
@@ -33,7 +34,7 @@ function love.load()
     for x = -40, 40 do
         for y = -30, 30 do
             newParticle(x * 12 + love.graphics.getWidth() / 2 + love.math.random(),
-                y * 12 + love.graphics.getHeight() / 2 + love.math.random(), 5, 0.8)
+                y * 12 + love.graphics.getHeight() / 2 + love.math.random(), 0.8)
         end
     end
 
@@ -56,17 +57,42 @@ function love.load()
     ---@type {[1]: hull}
     Hulls = {}
 
-    local body = love.physics.newBody(Box2DWorld, love.graphics.getWidth() - 100, love.graphics.getHeight() / 2,
-        "static")
-
-    local w, h = 100, 1500
-    local vertices = { -w / 2, -h / 2, w / 2, -h / 2, w / 2, h / 2, -w / 2, h / 2 }
-
-    local shape = love.physics.newPolygonShape(unpack(vertices))
-
+    local shape = love.physics.newRectangleShape(1000, 100)
+    local body = love.physics.newBody(Box2DWorld, love.graphics.getWidth() / 2, 300,
+        "dynamic")
     local fixture = love.physics.newFixture(body, shape)
 
     table.insert(Hulls, newHull(body, fixture, shape))
+
+    local shape1 = love.physics.newRectangleShape(50, 400)
+    local body1 = love.physics.newBody(Box2DWorld, love.graphics.getWidth() / 2 - 500,
+        300 - 200,
+        "dynamic")
+    local fixture1 = love.physics.newFixture(body1, shape1)
+
+    love.physics.newWeldJoint(body, body1, love.graphics.getWidth() / 2 - 500, 300 - 100)
+
+    table.insert(Hulls, newHull(body1, fixture1, shape1))
+
+    local shape2 = love.physics.newRectangleShape(50, 400)
+    local body2 = love.physics.newBody(Box2DWorld, love.graphics.getWidth() / 2 + 500,
+        300 - 200,
+        "dynamic")
+    local fixture2 = love.physics.newFixture(body2, shape2)
+
+    love.physics.newWeldJoint(body, body2, love.graphics.getWidth() / 2 + 500, 300 - 100)
+
+    table.insert(Hulls, newHull(body2, fixture2, shape2))
+
+    local shape4 = love.physics.newRectangleShape(1000, 100)
+    local body4 = love.physics.newBody(Box2DWorld, love.graphics.getWidth() / 2, -100,
+        "dynamic")
+    local fixture4 = love.physics.newFixture(body4, shape4)
+
+    love.physics.newWeldJoint(body1, body4, love.graphics.getWidth() / 2 - 500, -50)
+    love.physics.newWeldJoint(body2, body4, love.graphics.getWidth() / 2 + 500, -50)
+
+    table.insert(Hulls, newHull(body4, fixture4, shape4))
 
     do -- create a floor and walls
         local body = love.physics.newBody(Box2DWorld, 0, love.graphics.getHeight(), "static")
@@ -115,7 +141,6 @@ function love.update(dt)
     do -- update hulls
         for i, hull in ipairs(Hulls) do
             hull:update(dt)
-            hull.body:setPosition(love.mouse.getPosition())
         end
     end
 

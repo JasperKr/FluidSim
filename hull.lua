@@ -17,36 +17,106 @@ function newHull(body, fixture, shape)
         body = body,
         fixture = fixture,
         shape = shape,
-        density = 1,
+        density = 1.8,
     }
+    fixture:setDensity(t.density)
+    body:resetMassData()
 
     return setmetatable(t, hullMt)
 end
 
+local function checkAndResolve(hull, self, x, y)
+    local localPosX, localPosY = hull.body:getLocalPoint(x, y)
+
+    local minX, minY, maxX, maxY = hull.shape:computeAABB(0, 0, 0)
+
+    if circleInAABB(minX, minY, maxX, maxY, localPosX, localPosY, self.radius) then
+        local dist, intersectionX, intersectionY, diffX, diffY, sign = pointAABBDistanceSqr(
+            minX,
+            minY,
+            maxX,
+            maxY,
+            localPosX,
+            localPosY
+        )
+
+        intersectionX, intersectionY = hull.body:getWorldPoint(intersectionX, intersectionY)
+
+
+        if dist < self.radius * self.radius or sign < 0 then -- collision or inside
+            local normalX, normalY = normalize(diffX, diffY)
+            normalX, normalY = hull.body:getWorldVector(normalX, normalY)
+
+            local overlap = -math.sqrt(dist) * sign
+
+            self.x = self.x - normalX * overlap
+            self.y = self.y - normalY * overlap
+
+            local forceInDirection = dot(self.velocityX, self.velocityY, normalX, normalY)
+
+            local fx = normalX * forceInDirection
+            local fy = normalY * forceInDirection
+
+            self.velocityX = self.velocityX - fx
+            self.velocityY = self.velocityY - fy
+
+            hull.body:applyLinearImpulse(fx * Settings.fluidMass * self.mass, fy * Settings.fluidMass * self.mass,
+                intersectionX, intersectionY)
+        end
+    end
+end
+
+function hullFunctions:getParticles(checkPredicted)
+    local minX, minY, maxX, maxY = self.fixture:getBoundingBox()
+    minX = minX - Settings.particleRadius
+    minY = minY - Settings.particleRadius
+    maxX = maxX + Settings.particleRadius
+    maxY = maxY + Settings.particleRadius
+    local points = {}
+    local predictedParticles = {}
+
+    local shapeMinX, shapeMinY, shapeMaxX, shapeMaxY = self.shape:computeAABB(0, 0, 0)
+
+
+    for x = math.floor(minX * Settings.inverseChunkSize), math.ceil(maxX * Settings.inverseChunkSize) do
+        for y = math.floor(minY * Settings.inverseChunkSize), math.ceil(maxY * Settings.inverseChunkSize) do
+            local key = positionToIndex(x, y)
+            local startIndex = StartIndices[key]
+            if startIndex then
+                for index = startIndex, #SpatialLookup do
+                    if SpatialLookup[index][2] ~= key then
+                        break
+                    end
+
+                    local particleIndex = SpatialLookup[index][1]
+                    local particle = Particles[particleIndex]
+
+                    local objectSpaceX, objectSpaceY = self.body:getLocalPoint(particle.x, particle.y)
+
+                    if circleInAABB(shapeMinX, shapeMinY, shapeMaxX, shapeMaxY, objectSpaceX, objectSpaceY, particle.radius) then
+                        table.insert(points, particle)
+                    elseif checkPredicted then
+                        objectSpaceX, objectSpaceY = self.body:getLocalPoint(particle.predictedX, particle.predictedY)
+                        if circleInAABB(shapeMinX, shapeMinY, shapeMaxX, shapeMaxY, objectSpaceX, objectSpaceY, particle.radius) then
+                            table.insert(points, particle)
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    return points, predictedParticles
+end
+
 function hullFunctions:update(dt)
-    --local mass = self.body:getMass()
-    --local vertices = { self.shape:getPoints() }
-
-    -- local vx, vy = self.body:getLinearVelocity()
-    -- for index = 1, #vertices, 2 do
-    --     local localX, localY = vertices[index], vertices[index + 1]
-    --     local x, y = self.body:getWorldPoint(localX, localY)
-
-    --     local pointsInRadius = getPointsInRadius(x, y)
-
-    --     local density = calculateDensity(x, y, pointsInRadius) -- density at the point
-
-    --     local pressureX, pressureY = calculatePressureForce(nil, pointsInRadius, x, y, density)
-    --     local viscosityX, viscosityY = calculateViscosityForce(nil, pointsInRadius, x, y, vx, vy)
-
-    --     local ax = -(pressureX - viscosityX * Settings.viscosity) * dt / self.density
-    --     local ay = -(pressureY - viscosityY * Settings.viscosity) * dt / self.density
-
-    --     local fx = ax * Settings.scale
-    --     local fy = ay * Settings.scale
-
-    --     self.body:applyLinearImpulse(fx, fy, x, y)
-    -- end
+    local particles, predictedParticles = self:getParticles()
+    for _, particle in ipairs(particles) do
+        checkAndResolve(self, particle, particle.x, particle.y)
+    end
+    for _, particle in ipairs(predictedParticles) do
+        checkAndResolve(self, particle, particle.predictedX, particle.predictedY)
+    end
 end
 
 function hullFunctions:draw()
