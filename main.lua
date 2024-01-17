@@ -6,19 +6,20 @@ function love.load()
         targetDensity = 1.5,
         pressureMultiplier = 3000,
         viscosity = 11,
-        drawRadius = 10,
+        drawRadius = 15,
         mainCanvas = love.graphics.newCanvas(love.graphics.getWidth(), love.graphics.getHeight(), { format = "rgba32f" }),
         waterEffectShader = love.graphics.newShader("waterEffect.glsl"),
         substeps = 1,
         fluidMass = 0.005,
         debugDraw = false,
-        particleRadius = 5
+        particleRadius = 3
     }
     Settings.chunkSize = Settings.smoothingRadius
     Settings.inverseChunkSize = 1 / Settings.chunkSize
     Settings.gravity = Settings.gravity * Settings.scale
     Settings.pressureMultiplier = Settings.pressureMultiplier * Settings.scale
     Settings.targetDensity = Settings.targetDensity / Settings.scale
+    Settings.smoothingRadiusSqr = Settings.smoothingRadius * Settings.smoothingRadius
 
     love.physics.setMeter(Settings.scale)
     Box2DWorld = love.physics.newWorld(0, 9.81 * Settings.scale, true)
@@ -107,22 +108,40 @@ function love.load()
         local shape = love.physics.newEdgeShape(0, 0, 0, love.graphics.getHeight())
         local fixture = love.physics.newFixture(body, shape)
     end
+
+    Timer = {
+        timings = {}
+    }
+end
+
+local function addTiming(name)
+    if Timer.lastTime then
+        table.insert(Timer.timings, name .. ": " .. (love.timer.getTime() - Timer.lastTime))
+    end
+    Timer.lastTime = love.timer.getTime()
 end
 
 function love.update(dt)
     dt = math.min(dt, 1 / 60)
+    addTiming("start")
     Box2DWorld:update(dt)
+    addTiming("box2d")
 
     local substepDt = dt / Settings.substeps
-    love.graphics.setCanvas(Settings.mainCanvas)
-    love.graphics.clear(0, 0, 0, 1)
     for substep = 1, Settings.substeps do -- update particles
         for i, particle in ipairs(Particles) do
             particle.predictedX = particle.x + particle.velocityX * 0.0083333333
             particle.predictedY = particle.y + particle.velocityY * 0.0083333333
         end
         updateSpatialLookup()
+        addTiming("spatial lookup")
+
+        for index, particle in ipairs(Particles) do
+            updatePointsInRadius(particle)
+        end
+        addTiming("points in radius")
         updateParticleDensities()
+        addTiming("densities")
 
         for i, particle in ipairs(Particles) do
             local pressureX, pressureY = calculatePressureForce(particle)
@@ -132,17 +151,19 @@ function love.update(dt)
             particle.velocityY = particle.velocityY -
                 (pressureY - viscosityY * Settings.viscosity) * substepDt * particle.mass * particle.inverseDensity
         end
+        addTiming("forces")
         for i, particle in ipairs(Particles) do
             particle:update(substepDt)
         end
+        addTiming("update")
     end
-    love.graphics.setCanvas()
 
     do -- update hulls
         for i, hull in ipairs(Hulls) do
             hull:update(dt)
         end
     end
+    addTiming("hulls")
 
     do -- mouse interactions
         if love.mouse.isDown(1, 2) then
@@ -159,6 +180,7 @@ function love.draw()
     do -- draw fluid
         love.graphics.setColor(1, 1, 1, 1)
         love.graphics.setCanvas(Settings.mainCanvas)
+        love.graphics.clear(0, 0, 0, 0)
         love.graphics.setBlendMode("add", "premultiplied")
         for i, particle in ipairs(Particles) do
             particle:draw()
@@ -180,6 +202,15 @@ function love.draw()
             hull:draw()
         end
     end
+
+    love.graphics.setColor(1, 1, 1)
+
+    for i, timing in ipairs(Timer.timings) do
+        love.graphics.print(timing, 0, 20 * i + 20)
+    end
+
+    Timer.timings = {}
+    Timer.lastTime = nil
 
 
     love.graphics.setColor(1, 1, 1)
@@ -237,20 +268,24 @@ end
 
 function calculateDensity(x, y, pointsInRadius)
     local density = 0
-
-    local particles
     if type(x) == "number" then
-        particles = pointsInRadius or getPointsInRadius(x, y)
-    else
-        particles = x.pointsInRadius
-        y = x.predictedY
-        x = x.predictedX
-    end
-    for index, particle in ipairs(particles) do
-        local distance = length(x - particle.x, y - particle.y)
-        local influence = smoothingFunction(Settings.smoothingRadius, distance)
+        local particles = pointsInRadius or getPointsInRadius(x, y)
+        for index, particle in ipairs(particles) do
+            local distance = length(x - particle.x, y - particle.y)
+            local influence = smoothingFunction(Settings.smoothingRadius, distance)
 
-        density = density + particle.mass * influence
+            density = density + particle.mass * influence
+        end
+    else
+        local sampleParticle = x
+
+        for index = 1, sampleParticle.pointsInRadiusAmount do
+            local particle = sampleParticle.pointsInRadius[index]
+            local distance = length(sampleParticle.predictedX - particle.x, sampleParticle.predictedY - particle.y)
+            local influence = smoothingFunction(Settings.smoothingRadius, distance)
+
+            density = density + particle.mass * influence
+        end
     end
 
     return density
@@ -259,30 +294,57 @@ end
 function calculatePressureForce(sampleParticle, pointsInRadius, x, y, density)
     local pressureX, pressureY = 0, 0
 
-    for loopIndex, particle in ipairs(pointsInRadius or sampleParticle.pointsInRadius) do
-        if particle == sampleParticle then
-            goto continue
+    if sampleParticle then
+        for loopIndex = 1, sampleParticle.pointsInRadiusAmount do
+            local particle = sampleParticle.pointsInRadius[loopIndex]
+
+            if particle == sampleParticle then
+                goto continue
+            end
+
+            local dx = sampleParticle.predictedX - particle.predictedX
+            local dy = sampleParticle.predictedY - particle.predictedY
+
+            local distance = length(dx, dy)
+
+            local dirX, dirY
+            if distance > 0 then
+                dirX, dirY = dx / distance, dy / distance
+            else
+                dirX, dirY = 0, 0
+            end
+
+            local influence = smoothingFunctionDerivative(Settings.smoothingRadius, distance)
+
+            local sharedPressure = calculateSharedPressure(particle.density, sampleParticle.density)
+            pressureX = pressureX -
+                sharedPressure * dirX * influence * Settings.scale
+            pressureY = pressureY -
+                sharedPressure * dirY * influence * Settings.scale
+            ::continue::
         end
-        local dx = x or sampleParticle.predictedX - particle.predictedX
-        local dy = y or sampleParticle.predictedY - particle.predictedY
+    else
+        for loopIndex, particle in ipairs(pointsInRadius) do
+            local dx = x - particle.predictedX
+            local dy = y - particle.predictedY
 
-        local distance = length(dx, dy)
+            local distance = length(dx, dy)
 
-        local dirX, dirY
-        if distance > 0 then
-            dirX, dirY = dx / distance, dy / distance
-        else
-            dirX, dirY = 0, 0
+            local dirX, dirY
+            if distance > 0 then
+                dirX, dirY = dx / distance, dy / distance
+            else
+                dirX, dirY = 0, 0
+            end
+
+            local influence = smoothingFunctionDerivative(Settings.smoothingRadius, distance)
+
+            local sharedPressure = calculateSharedPressure(particle.density, density)
+            pressureX = pressureX -
+                sharedPressure * dirX * influence * Settings.scale
+            pressureY = pressureY -
+                sharedPressure * dirY * influence * Settings.scale
         end
-
-        local influence = smoothingFunctionDerivative(Settings.smoothingRadius, distance)
-
-        local sharedPressure = calculateSharedPressure(particle.density, density or sampleParticle.density)
-        pressureX = pressureX -
-            sharedPressure * dirX * influence * Settings.scale
-        pressureY = pressureY -
-            sharedPressure * dirY * influence * Settings.scale
-        ::continue::
     end
 
     return pressureX, pressureY
@@ -327,6 +389,10 @@ function positionToChunkCoord(x, y)
     return chunkX, chunkY
 end
 
+local tableSort = function(a, b)
+    return a[2] > b[2]
+end
+
 function updateSpatialLookup()
     for index, particle in ipairs(Particles) do
         local chunkX, chunkY = positionToChunkCoord(particle.predictedX, particle.predictedY)
@@ -335,9 +401,7 @@ function updateSpatialLookup()
         StartIndices[index] = math.huge
     end
 
-    table.sort(SpatialLookup, function(a, b)
-        return a[2] > b[2]
-    end)
+    table.sort(SpatialLookup, tableSort)
 
     for index, particle in ipairs(Particles) do
         local key = SpatialLookup[index][2]
@@ -348,14 +412,9 @@ function updateSpatialLookup()
             StartIndices[key] = index
         end
     end
-    for index, particle in ipairs(Particles) do
-        particle.pointsInRadius = getPointsInRadius(particle.predictedX, particle.predictedY)
-    end
 end
 
 function getPointsInRadius(x, y)
-    local radius = Settings.smoothingRadius
-    local radiusSqr = radius * radius
     local centerX, centerY = positionToChunkCoord(x, y)
 
     local points = {}
@@ -372,10 +431,13 @@ function getPointsInRadius(x, y)
 
                     local particleIndex = SpatialLookup[index][1]
                     local particle = Particles[particleIndex]
-                    local distSqr = (particle.predictedX - x) * (particle.predictedX - x) +
-                        (particle.predictedY - y) * (particle.predictedY - y)
 
-                    if distSqr < radiusSqr then
+                    local dx = particle.predictedX - x
+                    local dy = particle.predictedY - y
+
+                    local distSqr = dx * dx + dy * dy
+
+                    if distSqr < Settings.smoothingRadiusSqr then
                         table.insert(points, particle)
                     end
                 end
@@ -384,6 +446,41 @@ function getPointsInRadius(x, y)
     end
 
     return points
+end
+
+function updatePointsInRadius(sampleParticle)
+    local centerX, centerY = positionToChunkCoord(sampleParticle.predictedX, sampleParticle.predictedY)
+
+    local pointsIndex = 1
+
+    for chunkX = centerX - 1, centerX + 1 do
+        for chunkY = centerY - 1, centerY + 1 do
+            local key = positionToIndex(chunkX, chunkY)
+            local startIndex = StartIndices[key]
+            if startIndex then
+                for index = startIndex, #SpatialLookup do
+                    if SpatialLookup[index][2] ~= key then
+                        break
+                    end
+
+                    local particleIndex = SpatialLookup[index][1]
+                    local particle = Particles[particleIndex]
+
+                    local dx = particle.predictedX - sampleParticle.predictedX
+                    local dy = particle.predictedY - sampleParticle.predictedY
+
+                    local distSqr = dx * dx + dy * dy
+
+                    if distSqr < Settings.smoothingRadiusSqr then
+                        sampleParticle.pointsInRadius[pointsIndex] = particle
+                        pointsIndex = pointsIndex + 1
+                    end
+                end
+            end
+        end
+    end
+
+    sampleParticle.pointsInRadiusAmount = pointsIndex - 1
 end
 
 function viscositySmoothingFunction(distance, radius)
@@ -400,18 +497,23 @@ function calculateViscosityForce(particle, pointsInRadius, x, y, vx, vy)
     local forceX, forceY = 0, 0
     x, y = x or particle.predictedX, y or particle.predictedY
 
-    for index, otherParticle in ipairs(pointsInRadius or particle.pointsInRadius) do
-        if otherParticle == particle then
-            --goto continue
+    if pointsInRadius then
+        for index, otherParticle in ipairs(pointsInRadius) do
+            local distance = length(x - otherParticle.predictedX, y - otherParticle.predictedY)
+
+            local influence = viscositySmoothingFunction(distance, Settings.smoothingRadius)
+            forceX = forceX + influence * (otherParticle.velocityX - (vx or particle.velocityX))
+            forceY = forceY + influence * (otherParticle.velocityY - (vy or particle.velocityY))
         end
+    else
+        for index = 1, particle.pointsInRadiusAmount do
+            local otherParticle = particle.pointsInRadius[index]
+            local distance = length(x - otherParticle.predictedX, y - otherParticle.predictedY)
 
-        local distance = length(x - otherParticle.predictedX, y - otherParticle.predictedY)
-
-        local influence = viscositySmoothingFunction(distance, Settings.smoothingRadius)
-        forceX = forceX + influence * (otherParticle.velocityX - (vx or particle.velocityX))
-        forceY = forceY + influence * (otherParticle.velocityY - (vy or particle.velocityY))
-
-        ::continue::
+            local influence = viscositySmoothingFunction(distance, Settings.smoothingRadius)
+            forceX = forceX + influence * (otherParticle.velocityX - (vx or particle.velocityX))
+            forceY = forceY + influence * (otherParticle.velocityY - (vy or particle.velocityY))
+        end
     end
 
     return forceX, forceY

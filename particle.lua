@@ -25,7 +25,8 @@ function newParticle(x, y, restitution)
         property = 0,
         density = 1,
         inverseDensity = 1,
-        mass = 10
+        mass = 10,
+        pointsInRadius = {}
     }
     self.inverseMass = 1 / self.mass
     table.insert(Particles, self)
@@ -135,10 +136,7 @@ function particleFunctions:resolveCollisions()
         self.velocityX = -math.abs(self.velocityX) * self.restitution
     end
 
-    if minY < 0 then
-        self.y = self.radius
-        self.velocityY = math.abs(self.velocityY) * self.restitution
-    elseif maxY > love.graphics.getHeight() then
+    if maxY > love.graphics.getHeight() then
         self.y = love.graphics.getHeight() - self.radius
         self.velocityY = -math.abs(self.velocityY) * self.restitution
     end
