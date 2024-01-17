@@ -26,7 +26,12 @@ function newParticle(x, y, restitution)
         density = 1,
         inverseDensity = 1,
         mass = 10,
-        pointsInRadius = {}
+        pointsInRadius = {},
+        chunkUpdateDelay = Settings.chunkUpdateDelay,
+        chunkUpdateTimer = love.math.random(0, Settings.chunkUpdateDelay), -- stagger chunk updates
+        pointsInRadiusAmount = 0,
+        updateX = x,
+        updateY = y,
     }
     self.inverseMass = 1 / self.mass
     table.insert(Particles, self)

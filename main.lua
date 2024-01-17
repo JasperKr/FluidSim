@@ -11,8 +11,11 @@ function love.load()
         waterEffectShader = love.graphics.newShader("waterEffect.glsl"),
         substeps = 1,
         fluidMass = 0.005,
-        debugDraw = false,
-        particleRadius = 3
+        debugDraw = true,
+        particleRadius = 3,
+        chunkUpdateDelay = 30, -- ticks
+        -- if the particle moves more than 10 pixels, or the chunkUpdateDelay is reached, update the chunk the particle is in
+        moveBoundry = 5,
     }
     Settings.chunkSize = Settings.smoothingRadius
     Settings.inverseChunkSize = 1 / Settings.chunkSize
@@ -20,6 +23,7 @@ function love.load()
     Settings.pressureMultiplier = Settings.pressureMultiplier * Settings.scale
     Settings.targetDensity = Settings.targetDensity / Settings.scale
     Settings.smoothingRadiusSqr = Settings.smoothingRadius * Settings.smoothingRadius
+    Settings.moveBoundrySqr = Settings.moveBoundry * Settings.moveBoundry
 
     love.physics.setMeter(Settings.scale)
     Box2DWorld = love.physics.newWorld(0, 9.81 * Settings.scale, true)
@@ -116,7 +120,9 @@ end
 
 local function addTiming(name)
     if Timer.lastTime then
-        table.insert(Timer.timings, name .. ": " .. (love.timer.getTime() - Timer.lastTime))
+        table.insert(Timer.timings, {
+            name .. ": " .. (love.timer.getTime() - Timer.lastTime), love.timer.getTime() - Timer.lastTime
+        })
     end
     Timer.lastTime = love.timer.getTime()
 end
@@ -180,7 +186,7 @@ function love.draw()
     do -- draw fluid
         love.graphics.setColor(1, 1, 1, 1)
         love.graphics.setCanvas(Settings.mainCanvas)
-        love.graphics.clear(0, 0, 0, 0)
+        love.graphics.clear(0, 0, 0, 1)
         love.graphics.setBlendMode("add", "premultiplied")
         for i, particle in ipairs(Particles) do
             particle:draw()
@@ -205,9 +211,14 @@ function love.draw()
 
     love.graphics.setColor(1, 1, 1)
 
+    local total = 0
     for i, timing in ipairs(Timer.timings) do
-        love.graphics.print(timing, 0, 20 * i + 20)
+        love.graphics.print(timing[1], 0, 20 * i + 20)
+        total = total + timing[2]
     end
+    love.graphics.print("Total: " .. total, 0, 20 * (#Timer.timings + 1) + 20)
+    love.graphics.print("FPS: " .. 1 / total, 0, 20 * (#Timer.timings + 2) + 20)
+
 
     Timer.timings = {}
     Timer.lastTime = nil
@@ -377,10 +388,7 @@ function calculateSharedPressure(density, sampleParticleDensity)
 end
 
 function positionToIndex(x, y)
-    local hashX = 5376
-    local hashY = 9737333
-    local index = hashX * x + y * hashY
-    return index % #Particles
+    return (x * 5376 + y * 9737333) % #Particles
 end
 
 function positionToChunkCoord(x, y)
@@ -449,38 +457,48 @@ function getPointsInRadius(x, y)
 end
 
 function updatePointsInRadius(sampleParticle)
-    local centerX, centerY = positionToChunkCoord(sampleParticle.predictedX, sampleParticle.predictedY)
+    sampleParticle.chunkUpdateTimer = sampleParticle.chunkUpdateTimer - 1
 
-    local pointsIndex = 1
+    local dx = sampleParticle.updateX - sampleParticle.predictedX
+    local dy = sampleParticle.updateY - sampleParticle.predictedY
 
-    for chunkX = centerX - 1, centerX + 1 do
-        for chunkY = centerY - 1, centerY + 1 do
-            local key = positionToIndex(chunkX, chunkY)
-            local startIndex = StartIndices[key]
-            if startIndex then
-                for index = startIndex, #SpatialLookup do
-                    if SpatialLookup[index][2] ~= key then
-                        break
-                    end
+    if sampleParticle.chunkUpdateTimer <= 0 or dx * dx + dy * dy > Settings.moveBoundrySqr then
+        local centerX, centerY = positionToChunkCoord(sampleParticle.predictedX, sampleParticle.predictedY)
 
-                    local particleIndex = SpatialLookup[index][1]
-                    local particle = Particles[particleIndex]
+        local pointsIndex = 1
 
-                    local dx = particle.predictedX - sampleParticle.predictedX
-                    local dy = particle.predictedY - sampleParticle.predictedY
+        for chunkX = centerX - 1, centerX + 1 do
+            for chunkY = centerY - 1, centerY + 1 do
+                local key = positionToIndex(chunkX, chunkY)
+                local startIndex = StartIndices[key]
+                if startIndex then
+                    for index = startIndex, #SpatialLookup do
+                        if SpatialLookup[index][2] ~= key then
+                            break
+                        end
 
-                    local distSqr = dx * dx + dy * dy
+                        local particleIndex = SpatialLookup[index][1]
+                        local particle = Particles[particleIndex]
 
-                    if distSqr < Settings.smoothingRadiusSqr then
-                        sampleParticle.pointsInRadius[pointsIndex] = particle
-                        pointsIndex = pointsIndex + 1
+                        local dx = particle.predictedX - sampleParticle.predictedX
+                        local dy = particle.predictedY - sampleParticle.predictedY
+
+                        local distSqr = dx * dx + dy * dy
+
+                        if distSqr < Settings.smoothingRadiusSqr then
+                            sampleParticle.pointsInRadius[pointsIndex] = particle
+                            pointsIndex = pointsIndex + 1
+                        end
                     end
                 end
             end
         end
-    end
 
-    sampleParticle.pointsInRadiusAmount = pointsIndex - 1
+        sampleParticle.pointsInRadiusAmount = pointsIndex - 1
+        sampleParticle.chunkUpdateTimer = sampleParticle.chunkUpdateDelay
+        sampleParticle.updateX = sampleParticle.predictedX
+        sampleParticle.updateY = sampleParticle.predictedY
+    end
 end
 
 function viscositySmoothingFunction(distance, radius)
