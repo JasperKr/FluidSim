@@ -52,7 +52,7 @@ local function checkAndResolve(hull, self, x, y)
             self.x = self.x - normalX * overlap
             self.y = self.y - normalY * overlap
 
-            local forceInDirection = dot(self.velocityX, self.velocityY, normalX, normalY)
+            local forceInDirection = vectorMath.dot(self.velocityX, self.velocityY, normalX, normalY)
 
             local fx = normalX * forceInDirection
             local fy = normalY * forceInDirection
@@ -64,6 +64,10 @@ local function checkAndResolve(hull, self, x, y)
                 intersectionX, intersectionY)
         end
     end
+end
+
+local function positionToIndex(x, y)
+    return (x * 5376 + y * 9737333) % #Particles
 end
 
 function hullFunctions:getParticles(checkPredicted)
@@ -97,7 +101,8 @@ function hullFunctions:getParticles(checkPredicted)
                         table.insert(points, particle)
                     elseif checkPredicted then
                         objectSpaceX, objectSpaceY = self.body:getLocalPoint(particle.predictedX, particle.predictedY)
-                        if circleInAABB(shapeMinX, shapeMinY, shapeMaxX, shapeMaxY, objectSpaceX, objectSpaceY, particle.radius) then
+                        if circleInAABB(shapeMinX, shapeMinY, shapeMaxX,
+                                shapeMaxY, objectSpaceX, objectSpaceY, particle.radius) then
                             table.insert(points, particle)
                         end
                     end

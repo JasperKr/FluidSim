@@ -1,28 +1,14 @@
 local particleFunctions = {}
 local particleMt = { __index = particleFunctions }
 
-local particleCollisionShape = {}
-do -- create particle collision shape
-    local shape = love.physics.newCircleShape(1.25)
-    local body = love.physics.newBody(Box2DWorld, 100, 100, "kinematic")
-    local fixture = love.physics.newFixture(body, shape)
-    fixture:setSensor(true)
-    particleCollisionShape = {
-        shape = shape,
-        body = body,
-        fixture = fixture
-    }
-end
-
 function newParticle(x, y, restitution)
     local self = {
         x = x,
         y = y,
         velocityX = 0,
         velocityY = 0,
-        radius = Settings.particleRadius,
+        radius = Settings.particleRadius + love.math.random(),
         restitution = restitution or 0.9,
-        property = 0,
         density = 1,
         inverseDensity = 1,
         mass = 10,
@@ -49,7 +35,7 @@ end
 
 function particleFunctions:draw()
     if Settings.debugDraw then
-        local velocity = length(self.velocityX, self.velocityY)
+        local velocity = vectorMath.length(self.velocityX, self.velocityY)
         local gradientMax = 1000
 
         local r = velocity / gradientMax       --0.2
