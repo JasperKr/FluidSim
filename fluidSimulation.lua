@@ -4,14 +4,13 @@ if not ffi then
     ffi = require("ffi")
 end
 
-local sortFunction = require("qsort_op")
-local sortFunction2 = require("quickSort")
+local sortFunction = require("quickSort")
 
-sim.spatialLookupBufferSize = 10000
-sim.startIndicesBufferSize = 10000
+sim.spatialLookupBufferSize = 1000
+sim.startIndicesBufferSize = 1000
 
-sim.spatialLookupBufferIncrement = 1000
-sim.startIndicesBufferIncrement = 1000
+sim.spatialLookupBufferIncrement = 2
+sim.startIndicesBufferIncrement = 2
 
 sim.spatialLookupLength = 0
 sim.startIndicesLength = 0
@@ -23,41 +22,35 @@ ffi.cdef [[
     } spatialLookupEntry;
 ]]
 
-sim.spatialLookup = ffi.new("spatialLookupEntry[?]", sim.spatialLookupBufferSize,
-    ffi.new("spatialLookupEntry", { index = -1, key = -1 }))
+local emptySpatialLookupEntry = ffi.new("spatialLookupEntry", { index = -1, key = -1 })
+
+sim.spatialLookup = ffi.new("spatialLookupEntry[?]", sim.spatialLookupBufferSize, emptySpatialLookupEntry)
 
 sim.startIndices = ffi.new("int32_t[?]", sim.startIndicesBufferSize, -1)
 
-sim.spatialLookup2 = {} -- try it without ffi for now
-sim.startIndices2 = {}
-
 local function setSpatialLookupValue(index, value)
-    if tonumber(sim.spatialLookup[index].key) == -1 and sim.spatialLookup[index].index == -1 then
+    if tonumber(sim.spatialLookup[index].key) == -1 then
         sim.spatialLookupLength = sim.spatialLookupLength + 1
     end
 
-    if sim.spatialLookupLength >= sim.spatialLookupBufferSize then
-        sim.spatialLookupBufferSize = sim.spatialLookupBufferSize + sim.spatialLookupBufferIncrement
-        local new = ffi.new("spatialLookupEntry[?]", sim.spatialLookupBufferSize)
-        ffi.copy(new, sim.spatialLookup, sim.spatialLookupLength)
+    if sim.spatialLookupLength >= sim.spatialLookupBufferSize - 2 or index >= sim.spatialLookupBufferSize - 2 then -- -2 because we can't index the last element the next time
+        sim.spatialLookupBufferSize = sim.spatialLookupBufferSize * sim.spatialLookupBufferIncrement
+        local new = ffi.new("spatialLookupEntry[?]", sim.spatialLookupBufferSize, emptySpatialLookupEntry)
+        ffi.copy(new, sim.spatialLookup, sim.spatialLookupLength * ffi.sizeof("spatialLookupEntry"))
         sim.spatialLookup = new
     end
-
     sim.spatialLookup[index] = ffi.new("spatialLookupEntry", value)
-end
-
-local function setSpatialLookupValue2(index, value)
-    sim.spatialLookup[index] = value
 end
 
 local function setStartIndicesValue(index, value)
     if sim.startIndices[index] == -1 then
         sim.startIndicesLength = sim.startIndicesLength + 1
     end
-    if sim.startIndicesLength >= sim.startIndicesBufferSize then
-        sim.startIndicesBufferSize = sim.startIndicesBufferSize + sim.startIndicesBufferIncrement
-        local new = ffi.new("int[?]", sim.startIndicesBufferSize)
-        ffi.copy(new, sim.startIndices, sim.startIndicesLength)
+
+    if sim.startIndicesLength >= sim.startIndicesBufferSize - 2 or index >= sim.startIndicesBufferSize - 2 then -- -2 because we can't index the last element the next time
+        sim.startIndicesBufferSize = sim.startIndicesBufferSize * sim.startIndicesBufferIncrement
+        local new = ffi.new("int32_t[?]", sim.startIndicesBufferSize, -1)
+        ffi.copy(new, sim.startIndices, sim.startIndicesLength * ffi.sizeof("int32_t"))
         sim.startIndices = new
     end
 
@@ -219,22 +212,6 @@ function sim.positionToChunkCoord(x, y)
     return math.floor(x * Settings.inverseChunkSize), math.floor(y * Settings.inverseChunkSize)
 end
 
-local function insertion_sort_impl(array, first, last, less)
-    for i = first + 1, last do
-        local k = first
-        local v = array[i]
-        for j = i, first + 1, -1 do
-            if less(v, array[j - 1]) then
-                array[j] = array[j - 1]
-            else
-                k = j
-                break
-            end
-        end
-        array[k] = v
-    end
-end
-
 local tableSort = function(a, b)
     return a.key < b.key
 end
@@ -250,7 +227,7 @@ local function sortSpatialLookup()
     -- test:
     --sim.spatialLookupLength = #sim.spatialLookup
     --insertion_sort_impl(sim.spatialLookup, 1, sim.spatialLookupLength, tableSort)
-    sortFunction2(sim.spatialLookup, 0, #Particles, tableSort, swapFunction)
+    sortFunction(sim.spatialLookup, 0, sim.spatialLookupLength, tableSort, swapFunction)
 end
 
 function sim.updateSpatialLookup()
@@ -451,17 +428,34 @@ function sim.update(dt, isThread, width, height)
             particle.predictedY = particle.y + particle.velocityY * 0.0083333333
         end
 
-        local ran, err = coroutine.resume(sim.coroutines.updateLookup) -- runs
-        assert(ran, err)
+        --local ran, err = coroutine.resume(sim.coroutines.updateLookup) -- runs
+        --assert(ran, err)
+        --
+        --ran, err = coroutine.resume(sim.coroutines.updateLookupRadius) -- error after a while
+        --assert(ran, err)
+        --
+        --ran, err = coroutine.resume(sim.coroutines.updateDensities) -- runs
+        --assert(ran, err)
+        --
+        --ran, err = coroutine.resume(sim.coroutines.updatePressureForces, dt)
+        --assert(ran, err)
 
-        ran, err = coroutine.resume(sim.coroutines.updateLookupRadius) -- error after a while
-        assert(ran, err)
+        sim.updateSpatialLookup()
 
-        ran, err = coroutine.resume(sim.coroutines.updateDensities) -- runs
-        assert(ran, err)
+        for i, particle in ipairs(Particles) do
+            sim.updatePointsInRadius(particle)
+        end
 
-        ran, err = coroutine.resume(sim.coroutines.updatePressureForces, dt)
-        assert(ran, err)
+        sim.updateParticleDensities()
+
+        for i, particle in ipairs(Particles) do
+            local pressureX, pressureY = calculatePressureForce(particle)
+            local viscosityX, viscosityY = sim.calculateViscosityForce(particle)
+            particle.velocityX = particle.velocityX -
+                (pressureX - viscosityX) * dt * particle.mass * particle.inverseDensity
+            particle.velocityY = particle.velocityY -
+                (pressureY - viscosityY) * dt * particle.mass * particle.inverseDensity
+        end
     end
     for i, particle in ipairs(Particles) do
         particle:update(dt, isThread, width, height)

@@ -29,8 +29,17 @@ local threads = {
     }
 }
 
+-- local indices, lookup = sim.startIndices, sim.spatialLookup
+
+-- local indicesPtr = ffi.new("int32_t*", indices)
+-- local lookupPtr = ffi.new("spatialLookupEntry*", lookup)
+
+-- local indicesPtrNum = tonumber(ffi.cast("uint64_t", indicesPtr))
+-- local lookupPtrNum = tonumber(ffi.cast("uint64_t", lookupPtr))
+
+
 --threads[1].thread:start({ copyForThreadSend(Settings), threads[1].send,
---    threads[1].receive, width, height })
+--    threads[1].receive, width, height, indicesPtrNum, lookupPtrNum })
 
 Particles = {}
 
