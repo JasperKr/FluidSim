@@ -81,18 +81,17 @@ function hullFunctions:getParticles(checkPredicted)
 
     local shapeMinX, shapeMinY, shapeMaxX, shapeMaxY = self.shape:computeAABB(0, 0, 0)
 
-
     for x = math.floor(minX * Settings.inverseChunkSize), math.ceil(maxX * Settings.inverseChunkSize) do
         for y = math.floor(minY * Settings.inverseChunkSize), math.ceil(maxY * Settings.inverseChunkSize) do
             local key = positionToIndex(x, y)
-            local startIndex = StartIndices[key]
+            local startIndex = sim.startIndices[key]
             if startIndex then
-                for index = startIndex, #SpatialLookup do
-                    if SpatialLookup[index][2] ~= key then
+                for index = startIndex, #sim.spatialLookup do
+                    if sim.spatialLookup[index][2] ~= key then
                         break
                     end
 
-                    local particleIndex = SpatialLookup[index][1]
+                    local particleIndex = sim.spatialLookup[index][1]
                     local particle = Particles[particleIndex]
 
                     local objectSpaceX, objectSpaceY = self.body:getLocalPoint(particle.x, particle.y)
@@ -118,9 +117,18 @@ function hullFunctions:update(dt)
     local particles, predictedParticles = self:getParticles()
     for _, particle in ipairs(particles) do
         checkAndResolve(self, particle, particle.x, particle.y)
+        particle.Creference.x = particle.x
+        particle.Creference.y = particle.y
+        particle.Creference.velocityX = particle.velocityX
+        particle.Creference.velocityY = particle.velocityY
     end
     for _, particle in ipairs(predictedParticles) do
         checkAndResolve(self, particle, particle.predictedX, particle.predictedY)
+
+        particle.Creference.x = particle.x
+        particle.Creference.y = particle.y
+        particle.Creference.velocityX = particle.velocityX
+        particle.Creference.velocityY = particle.velocityY
     end
 end
 

@@ -3,9 +3,9 @@ function love.load()
         gravity = 10,
         scale = 100, -- 100 pixels = 1 meter
         smoothingRadius = 50,
-        targetDensity = 1.5,
-        pressureMultiplier = 3000,
-        viscosity = 10,
+        targetDensity = 2,
+        pressureMultiplier = 700,
+        viscosity = 8.5,
         drawRadius = 15,
         mainCanvas = love.graphics.newCanvas(love.graphics.getWidth(), love.graphics.getHeight(), { format = "rgba32f" }),
         waterEffectShader = love.graphics.newShader("waterEffect.glsl"),
@@ -31,23 +31,27 @@ function love.load()
 
     require("vectorMath")
     require("tables")
-    require("quadtree")
+
+    FluidSimulation = {
+        Thread = {
+            thread = love.thread.newThread("Threads/fluidThread.lua"),
+            send = love.thread.newChannel(),
+            receive = love.thread.newChannel(),
+        }
+    }
+
     require("particle")
     require("vec")
     require("hull")
-    sim = require("fluidSim")
 
     Particles = {}
 
-    for x = -40, 40 do
+    for x = -50, 50 do
         for y = -30, 30 do
             newParticle(x * 12 + love.graphics.getWidth() / 2 + love.math.random(),
-                y * 12 + love.graphics.getHeight() / 2 + love.math.random(), 0.8)
+                y * 12 + love.graphics.getHeight() / 2 + love.math.random(), 0.8, false)
         end
     end
-
-    SpatialLookup = {}
-    StartIndices = {}
 
     local gradientImageData = love.image.newImageData(100, 100)
 
@@ -65,60 +69,28 @@ function love.load()
     ---@type {[1]: hull}
     Hulls = {}
 
-    local shape = love.physics.newRectangleShape(1000, 100)
-    local body = love.physics.newBody(Box2DWorld, love.graphics.getWidth() / 2, 300,
-        "dynamic")
-    local fixture = love.physics.newFixture(body, shape)
-
-    table.insert(Hulls, newHull(body, fixture, shape))
-
-    local shape1 = love.physics.newRectangleShape(50, 400)
-    local body1 = love.physics.newBody(Box2DWorld, love.graphics.getWidth() / 2 - 500,
-        300 - 200,
-        "dynamic")
-    local fixture1 = love.physics.newFixture(body1, shape1)
-
-    love.physics.newWeldJoint(body, body1, love.graphics.getWidth() / 2 - 500, 300 - 100)
-
-    table.insert(Hulls, newHull(body1, fixture1, shape1))
-
-    local shape2 = love.physics.newRectangleShape(50, 400)
-    local body2 = love.physics.newBody(Box2DWorld, love.graphics.getWidth() / 2 + 500,
-        300 - 200,
-        "dynamic")
-    local fixture2 = love.physics.newFixture(body2, shape2)
-
-    love.physics.newWeldJoint(body, body2, love.graphics.getWidth() / 2 + 500, 300 - 100)
-
-    table.insert(Hulls, newHull(body2, fixture2, shape2))
-
-    local shape4 = love.physics.newRectangleShape(1000, 100)
-    local body4 = love.physics.newBody(Box2DWorld, love.graphics.getWidth() / 2, -100,
-        "dynamic")
-    local fixture4 = love.physics.newFixture(body4, shape4)
-
-    love.physics.newWeldJoint(body1, body4, love.graphics.getWidth() / 2 - 500, -50)
-    love.physics.newWeldJoint(body2, body4, love.graphics.getWidth() / 2 + 500, -50)
-
-    table.insert(Hulls, newHull(body4, fixture4, shape4))
-
-    do -- create a floor and walls
-        local body = love.physics.newBody(Box2DWorld, 0, love.graphics.getHeight(), "static")
-        local shape = love.physics.newEdgeShape(0, 0, love.graphics.getWidth(), 0)
-        local fixture = love.physics.newFixture(body, shape)
-
-        local body = love.physics.newBody(Box2DWorld, 0, 0, "static")
-        local shape = love.physics.newEdgeShape(0, 0, 0, love.graphics.getHeight())
-        local fixture = love.physics.newFixture(body, shape)
-
-        local body = love.physics.newBody(Box2DWorld, love.graphics.getWidth(), 0, "static")
-        local shape = love.physics.newEdgeShape(0, 0, 0, love.graphics.getHeight())
-        local fixture = love.physics.newFixture(body, shape)
-    end
-
     Timer = {
         timings = {}
     }
+
+    print("start thread")
+    FluidSimulation.Thread.thread:start({ copyForThreadSend(Settings), FluidSimulation.Thread.send,
+        FluidSimulation.Thread.receive, love.graphics.getWidth(), love.graphics.getHeight() })
+
+    sim = require("fluidSimulation")
+end
+
+function copyForThreadSend(x, t)
+    local newTable = t or {}
+    for k, v in pairs(x) do
+        if type(v) == "table" then
+            newTable[k] = copyForThreadSend(v)
+        elseif type(v) == "number" or type(v) == "boolean" or type(v) == "string" then
+            newTable[k] = v
+        end
+    end
+
+    return newTable
 end
 
 local function addTiming(name)
@@ -136,7 +108,8 @@ function love.update(dt)
     Box2DWorld:update(dt)
     addTiming("box2d")
 
-    sim.update(dt)
+    sim.update(dt, false, love.graphics.getWidth(), love.graphics.getHeight())
+    addTiming("fluid")
 
     do -- update hulls
         for i, hull in ipairs(Hulls) do

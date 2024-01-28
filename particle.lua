@@ -1,13 +1,29 @@
 local particleFunctions = {}
 local particleMt = { __index = particleFunctions }
 
-function newParticle(x, y, restitution)
+local ffi = require("ffi")
+
+ffi.cdef [[
+    typedef struct {
+        float x;
+        float y;
+    } vec2;
+
+    typedef struct {
+        float x;
+        float y;
+        float velocityX;
+        float velocityY;
+    } sharedParticleData;
+]]
+
+function newParticle(x, y, restitution, thread, pointer)
     local self = {
         x = x,
         y = y,
         velocityX = 0,
         velocityY = 0,
-        radius = Settings.particleRadius + love.math.random(),
+        radius = Settings.particleRadius,
         restitution = restitution or 0.9,
         density = 1,
         inverseDensity = 1,
@@ -18,19 +34,54 @@ function newParticle(x, y, restitution)
         pointsInRadiusAmount = 0,
         updateX = x,
         updateY = y,
+        Creference = (not thread) and ffi.new("sharedParticleData", { x = x, y = y, velocityX = 0, velocityY = 0 }),
     }
     self.inverseMass = 1 / self.mass
+    if not thread then
+        self.CPointer = ffi.new("sharedParticleData*", self.Creference)
+    end
+
     table.insert(Particles, self)
+
+    if not thread then
+        local pointerNum = tonumber(ffi.cast("uint64_t", self.CPointer))
+        FluidSimulation.Thread.send:push({ type = "addParticle", data = { x, y, restitution }, pointer = pointerNum })
+    end
+
+    if thread then
+        local ptr = pointer
+        local castPtr = ffi.cast("void*", ptr)
+
+        self.Creference = ffi.cast("sharedParticleData*", castPtr)
+    end
+
     return setmetatable(self, particleMt)
 end
 
-function particleFunctions:update(dt)
-    self.x = self.x + self.velocityX * dt
-    self.y = self.y + self.velocityY * dt
+function particleFunctions:update(dt, thread, width, height)
+    if thread then
+        self.x = self.x + self.velocityX * dt
+        self.y = self.y + self.velocityY * dt
 
-    self.velocityY = self.velocityY + Settings.gravity * dt
+        self:resolveCollisions(width, height)
 
-    self:resolveCollisions()
+        self.velocityY = self.velocityY + Settings.gravity * dt
+
+        self.Creference.x = self.x
+        self.Creference.y = self.y
+
+        self.Creference.velocityX = self.velocityX
+        self.Creference.velocityY = self.velocityY
+    else
+        self.x = self.Creference.x
+        self.y = self.Creference.y
+
+        self.velocityX = self.Creference.velocityX
+        self.velocityY = self.Creference.velocityY
+
+        self.predictedX = self.x + self.velocityX * (1 / 60)
+        self.predictedY = self.y + self.velocityY * (1 / 60)
+    end
 end
 
 function particleFunctions:draw()
@@ -115,20 +166,20 @@ function pointAABBDistanceSqr(minX, minY, maxX, maxY, px, py)
     return dx * dx + dy * dy, px + dx, py + dy, dx, dy, 1
 end
 
-function particleFunctions:resolveCollisions()
+function particleFunctions:resolveCollisions(width, height)
     local minX, minY = self.x - self.radius, self.y - self.radius
     local maxX, maxY = self.x + self.radius, self.y + self.radius
 
     if minX < 0 then
         self.x = self.radius
         self.velocityX = math.abs(self.velocityX) * self.restitution
-    elseif maxX > love.graphics.getWidth() then
-        self.x = love.graphics.getWidth() - self.radius
+    elseif maxX > width then
+        self.x = width - self.radius
         self.velocityX = -math.abs(self.velocityX) * self.restitution
     end
 
-    if maxY > love.graphics.getHeight() then
-        self.y = love.graphics.getHeight() - self.radius
+    if maxY > height then
+        self.y = height - self.radius
         self.velocityY = -math.abs(self.velocityY) * self.restitution
     end
 end

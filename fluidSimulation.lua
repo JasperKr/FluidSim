@@ -1,5 +1,73 @@
 local sim = {}
 
+if not ffi then
+    ffi = require("ffi")
+end
+
+local sortFunction = require("qsort_op")
+local sortFunction2 = require("quickSort")
+
+sim.spatialLookupBufferSize = 10000
+sim.startIndicesBufferSize = 10000
+
+sim.spatialLookupBufferIncrement = 1000
+sim.startIndicesBufferIncrement = 1000
+
+sim.spatialLookupLength = 0
+sim.startIndicesLength = 0
+
+ffi.cdef [[
+    typedef struct {
+        int32_t index;
+        int32_t key;
+    } spatialLookupEntry;
+]]
+
+sim.spatialLookup = ffi.new("spatialLookupEntry[?]", sim.spatialLookupBufferSize,
+    ffi.new("spatialLookupEntry", { index = -1, key = -1 }))
+
+sim.startIndices = ffi.new("int32_t[?]", sim.startIndicesBufferSize, -1)
+
+sim.spatialLookup2 = {} -- try it without ffi for now
+sim.startIndices2 = {}
+
+local function setSpatialLookupValue(index, value)
+    if tonumber(sim.spatialLookup[index].key) == -1 and sim.spatialLookup[index].index == -1 then
+        sim.spatialLookupLength = sim.spatialLookupLength + 1
+    end
+
+    if sim.spatialLookupLength >= sim.spatialLookupBufferSize then
+        sim.spatialLookupBufferSize = sim.spatialLookupBufferSize + sim.spatialLookupBufferIncrement
+        local new = ffi.new("spatialLookupEntry[?]", sim.spatialLookupBufferSize)
+        ffi.copy(new, sim.spatialLookup, sim.spatialLookupLength)
+        sim.spatialLookup = new
+    end
+
+    sim.spatialLookup[index] = ffi.new("spatialLookupEntry", value)
+end
+
+local function setSpatialLookupValue2(index, value)
+    sim.spatialLookup[index] = value
+end
+
+local function setStartIndicesValue(index, value)
+    if sim.startIndices[index] == -1 then
+        sim.startIndicesLength = sim.startIndicesLength + 1
+    end
+    if sim.startIndicesLength >= sim.startIndicesBufferSize then
+        sim.startIndicesBufferSize = sim.startIndicesBufferSize + sim.startIndicesBufferIncrement
+        local new = ffi.new("int[?]", sim.startIndicesBufferSize)
+        ffi.copy(new, sim.startIndices, sim.startIndicesLength)
+        sim.startIndices = new
+    end
+
+    sim.startIndices[index] = value
+end
+
+local function setStartIndicesValue2(index, value)
+    sim.startIndices[index] = value
+end
+
 local function pow4(x)
     local x2 = x * x
     return x2 * x2
@@ -151,27 +219,57 @@ function sim.positionToChunkCoord(x, y)
     return math.floor(x * Settings.inverseChunkSize), math.floor(y * Settings.inverseChunkSize)
 end
 
+local function insertion_sort_impl(array, first, last, less)
+    for i = first + 1, last do
+        local k = first
+        local v = array[i]
+        for j = i, first + 1, -1 do
+            if less(v, array[j - 1]) then
+                array[j] = array[j - 1]
+            else
+                k = j
+                break
+            end
+        end
+        array[k] = v
+    end
+end
+
 local tableSort = function(a, b)
-    return a[2] > b[2]
+    return a.key < b.key
+end
+
+local swapFunction = function(array, i, j)
+    local key, index = array[i].key, array[i].index
+    array[i].key, array[i].index = array[j].key, array[j].index
+    array[j].key, array[j].index = key, index
+end
+
+local function sortSpatialLookup()
+    -- we can't use table.sort because it's a C array
+    -- test:
+    --sim.spatialLookupLength = #sim.spatialLookup
+    --insertion_sort_impl(sim.spatialLookup, 1, sim.spatialLookupLength, tableSort)
+    sortFunction2(sim.spatialLookup, 0, #Particles, tableSort, swapFunction)
 end
 
 function sim.updateSpatialLookup()
     for index, particle in ipairs(Particles) do
         local chunkX, chunkY = sim.positionToChunkCoord(particle.predictedX, particle.predictedY)
         local key = sim.positionToIndex(chunkX, chunkY)
-        SpatialLookup[index] = { index, key }
-        StartIndices[index] = math.huge
+        setSpatialLookupValue(index, { index = index, key = key })
+        setStartIndicesValue(index, math.huge)
     end
 
-    table.sort(SpatialLookup, tableSort)
+    sortSpatialLookup()
 
     for index, particle in ipairs(Particles) do
-        local key = SpatialLookup[index][2]
+        local key = tonumber(sim.spatialLookup[index].key)
 
-        local previousKey = index == 1 and math.huge or SpatialLookup[index - 1][2]
+        local previousKey = index == 1 and math.huge or sim.spatialLookup[index - 1].key
 
-        if key and key ~= previousKey then
-            StartIndices[key] = index
+        if key and key == key and key ~= previousKey then
+            setStartIndicesValue(key, index)
         end
     end
 end
@@ -184,14 +282,14 @@ function sim.getPointsInRadius(x, y)
     for chunkX = centerX - 1, centerX + 1 do
         for chunkY = centerY - 1, centerY + 1 do
             local key = sim.positionToIndex(chunkX, chunkY)
-            local startIndex = StartIndices[key]
-            if startIndex then
-                for index = startIndex, #SpatialLookup do
-                    if SpatialLookup[index][2] ~= key then
+            local startIndex = tonumber(sim.startIndices[key])
+            if startIndex and startIndex ~= -1 then
+                for index = startIndex, sim.spatialLookupLength do
+                    if tonumber(sim.spatialLookup[index].key) ~= key then
                         break
                     end
 
-                    local particleIndex = SpatialLookup[index][1]
+                    local particleIndex = tonumber(sim.spatialLookup[index].index)
                     local particle = Particles[particleIndex]
 
                     local dx = particle.predictedX - x
@@ -213,10 +311,10 @@ end
 function sim.updatePointsInRadius(sampleParticle)
     sampleParticle.chunkUpdateTimer = sampleParticle.chunkUpdateTimer - 1
 
-    local dx = sampleParticle.updateX - sampleParticle.predictedX
-    local dy = sampleParticle.updateY - sampleParticle.predictedY
+    local pdx = sampleParticle.updateX - sampleParticle.predictedX
+    local pdy = sampleParticle.updateY - sampleParticle.predictedY
 
-    if sampleParticle.chunkUpdateTimer <= 0 or dx * dx + dy * dy > Settings.moveBoundrySqr then
+    if sampleParticle.chunkUpdateTimer <= 0 or pdx * pdx + pdy * pdy > Settings.moveBoundrySqr then
         local centerX, centerY = sim.positionToChunkCoord(sampleParticle.predictedX, sampleParticle.predictedY)
 
         local pointsIndex = 1
@@ -224,27 +322,40 @@ function sim.updatePointsInRadius(sampleParticle)
         for chunkX = centerX - 1, centerX + 1 do
             for chunkY = centerY - 1, centerY + 1 do
                 local key = sim.positionToIndex(chunkX, chunkY)
-                local startIndex = StartIndices[key]
-                if startIndex then
-                    for index = startIndex, #SpatialLookup do
-                        if SpatialLookup[index][2] ~= key then
-                            break
-                        end
-
-                        local particleIndex = SpatialLookup[index][1]
-                        local particle = Particles[particleIndex]
-
-                        local dx = particle.predictedX - sampleParticle.predictedX
-                        local dy = particle.predictedY - sampleParticle.predictedY
-
-                        local distSqr = dx * dx + dy * dy
-
-                        if distSqr < Settings.smoothingRadiusSqr then
-                            sampleParticle.pointsInRadius[pointsIndex] = particle
-                            pointsIndex = pointsIndex + 1
-                        end
-                    end
+                local startIndex = tonumber(sim.startIndices[key])
+                if not startIndex or startIndex == -1 then
+                    goto continue
                 end
+
+                if startIndex == -2147483648 then
+                    startIndex = math.huge
+                end
+
+                for index = startIndex, sim.spatialLookupLength do
+                    if tonumber(sim.spatialLookup[index].key) ~= key then
+                        break
+                    end
+
+                    local particleIndex = tonumber(sim.spatialLookup[index].index)
+                    local particle = Particles[particleIndex]
+
+                    if not particle then
+                        goto skip
+                    end
+
+                    local dx = particle.predictedX - sampleParticle.predictedX
+                    local dy = particle.predictedY - sampleParticle.predictedY
+
+
+                    if dx * dx + dy * dy < Settings.smoothingRadiusSqr then
+                        sampleParticle.pointsInRadius[pointsIndex] = particle
+                        pointsIndex = pointsIndex + 1
+                    end
+
+                    ::skip::
+                end
+
+                ::continue::
             end
         end
 
@@ -294,31 +405,66 @@ function sim.calculateViscosityForce(particle, pointsInRadius, x, y, vx, vy)
     return forceX * Settings.viscosity, forceY * Settings.viscosity
 end
 
-function sim.update(dt)
-    local substepDt = dt / Settings.substeps
-    for substep = 1, Settings.substeps do -- update particles
+sim.coroutines = {
+    updateDensities = coroutine.create(function()
+        while true do
+            sim.updateParticleDensities()
+            coroutine.yield()
+        end
+    end),
+    updateLookup = coroutine.create(function()
+        while true do
+            sim.updateSpatialLookup()
+            coroutine.yield()
+        end
+    end),
+    updateLookupRadius = coroutine.create(function()
+        while true do
+            for index, particle in ipairs(Particles) do
+                sim.updatePointsInRadius(particle)
+            end
+            coroutine.yield()
+        end
+    end),
+
+    updatePressureForces = coroutine.create(function(dt)
+        while true do
+            for i, particle in ipairs(Particles) do
+                local pressureX, pressureY = calculatePressureForce(particle)
+                local viscosityX, viscosityY = sim.calculateViscosityForce(particle)
+                particle.velocityX = particle.velocityX -
+                    (pressureX - viscosityX) * dt * particle.mass * particle.inverseDensity
+                particle.velocityY = particle.velocityY -
+                    (pressureY - viscosityY) * dt * particle.mass * particle.inverseDensity
+            end
+            coroutine.yield()
+        end
+    end),
+}
+
+
+
+function sim.update(dt, isThread, width, height)
+    if isThread then
         for i, particle in ipairs(Particles) do
             particle.predictedX = particle.x + particle.velocityX * 0.0083333333
             particle.predictedY = particle.y + particle.velocityY * 0.0083333333
         end
-        sim.updateSpatialLookup()
 
-        for index, particle in ipairs(Particles) do
-            sim.updatePointsInRadius(particle)
-        end
-        sim.updateParticleDensities()
+        local ran, err = coroutine.resume(sim.coroutines.updateLookup) -- runs
+        assert(ran, err)
 
-        for i, particle in ipairs(Particles) do
-            local pressureX, pressureY = calculatePressureForce(particle)
-            local viscosityX, viscosityY = sim.calculateViscosityForce(particle)
-            particle.velocityX = particle.velocityX -
-                (pressureX - viscosityX) * substepDt * particle.mass * particle.inverseDensity
-            particle.velocityY = particle.velocityY -
-                (pressureY - viscosityY) * substepDt * particle.mass * particle.inverseDensity
-        end
-        for i, particle in ipairs(Particles) do
-            particle:update(substepDt)
-        end
+        ran, err = coroutine.resume(sim.coroutines.updateLookupRadius) -- error after a while
+        assert(ran, err)
+
+        ran, err = coroutine.resume(sim.coroutines.updateDensities) -- runs
+        assert(ran, err)
+
+        ran, err = coroutine.resume(sim.coroutines.updatePressureForces, dt)
+        assert(ran, err)
+    end
+    for i, particle in ipairs(Particles) do
+        particle:update(dt, isThread, width, height)
     end
 end
 
