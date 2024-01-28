@@ -33,7 +33,8 @@ local function setSpatialLookupValue(index, value)
         sim.spatialLookupLength = sim.spatialLookupLength + 1
     end
 
-    if sim.spatialLookupLength >= sim.spatialLookupBufferSize - 2 or index >= sim.spatialLookupBufferSize - 2 then -- -2 because we can't index the last element the next time
+    -- -2 because we can't index the last element the next time
+    if sim.spatialLookupLength >= sim.spatialLookupBufferSize - 2 or index >= sim.spatialLookupBufferSize - 2 then
         sim.spatialLookupBufferSize = sim.spatialLookupBufferSize * sim.spatialLookupBufferIncrement
         local new = ffi.new("spatialLookupEntry[?]", sim.spatialLookupBufferSize, emptySpatialLookupEntry)
         ffi.copy(new, sim.spatialLookup, sim.spatialLookupLength * ffi.sizeof("spatialLookupEntry"))
@@ -47,7 +48,8 @@ local function setStartIndicesValue(index, value)
         sim.startIndicesLength = sim.startIndicesLength + 1
     end
 
-    if sim.startIndicesLength >= sim.startIndicesBufferSize - 2 or index >= sim.startIndicesBufferSize - 2 then -- -2 because we can't index the last element the next time
+    -- -2 because we can't index the last element the next time
+    if sim.startIndicesLength >= sim.startIndicesBufferSize - 2 or index >= sim.startIndicesBufferSize - 2 then
         sim.startIndicesBufferSize = sim.startIndicesBufferSize * sim.startIndicesBufferIncrement
         local new = ffi.new("int32_t[?]", sim.startIndicesBufferSize, -1)
         ffi.copy(new, sim.startIndices, sim.startIndicesLength * ffi.sizeof("int32_t"))
@@ -428,34 +430,17 @@ function sim.update(dt, isThread, width, height)
             particle.predictedY = particle.y + particle.velocityY * 0.0083333333
         end
 
-        --local ran, err = coroutine.resume(sim.coroutines.updateLookup) -- runs
-        --assert(ran, err)
-        --
-        --ran, err = coroutine.resume(sim.coroutines.updateLookupRadius) -- error after a while
-        --assert(ran, err)
-        --
-        --ran, err = coroutine.resume(sim.coroutines.updateDensities) -- runs
-        --assert(ran, err)
-        --
-        --ran, err = coroutine.resume(sim.coroutines.updatePressureForces, dt)
-        --assert(ran, err)
+        local ran, err = coroutine.resume(sim.coroutines.updateLookup) -- runs
+        assert(ran, err)
 
-        sim.updateSpatialLookup()
+        ran, err = coroutine.resume(sim.coroutines.updateLookupRadius) -- error after a while
+        assert(ran, err)
 
-        for i, particle in ipairs(Particles) do
-            sim.updatePointsInRadius(particle)
-        end
+        ran, err = coroutine.resume(sim.coroutines.updateDensities) -- runs
+        assert(ran, err)
 
-        sim.updateParticleDensities()
-
-        for i, particle in ipairs(Particles) do
-            local pressureX, pressureY = calculatePressureForce(particle)
-            local viscosityX, viscosityY = sim.calculateViscosityForce(particle)
-            particle.velocityX = particle.velocityX -
-                (pressureX - viscosityX) * dt * particle.mass * particle.inverseDensity
-            particle.velocityY = particle.velocityY -
-                (pressureY - viscosityY) * dt * particle.mass * particle.inverseDensity
-        end
+        ran, err = coroutine.resume(sim.coroutines.updatePressureForces, dt)
+        assert(ran, err)
     end
     for i, particle in ipairs(Particles) do
         particle:update(dt, isThread, width, height)
