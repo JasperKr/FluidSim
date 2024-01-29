@@ -450,7 +450,7 @@ function sim.update(dt, isThread, width, height, threads)
         -- local ran, err = coroutine.resume(sim.coroutines.updateLookup) -- runs
         -- assert(ran, err)
 
-        ran, err = coroutine.resume(sim.coroutines.updateLookupRadius) -- error after a while
+        ran, err = coroutine.resume(sim.coroutines.updateLookupRadius)
         assert(ran, err)
 
         threads[1].readyToStartCheck:push(true)                     -- tell the partitioning thread to start
@@ -461,9 +461,13 @@ function sim.update(dt, isThread, width, height, threads)
         ran, err = coroutine.resume(sim.coroutines.updatePressureForces, dt)
         assert(ran, err)
     end
+    local averageNeighborCount = 0
     for i, particle in ipairs(Particles) do
         particle:update(dt, isThread, width, height)
+        averageNeighborCount = averageNeighborCount + particle.pointsInRadiusAmount
     end
+    averageNeighborCount = averageNeighborCount / #Particles
+    print(averageNeighborCount)
 end
 
 return sim

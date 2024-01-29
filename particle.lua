@@ -14,6 +14,7 @@ ffi.cdef [[
         float y;
         float velocityX;
         float velocityY;
+        struct sharedParticleData* neighbours[48];
     } sharedParticleData;
 ]]
 
