@@ -6,6 +6,13 @@ end
 
 local sortFunction = require("quickSort")
 
+require("tables")
+
+
+Particles = newIndexedTable()
+
+require("particle")
+
 sim.spatialLookupBufferSize = 10000
 sim.startIndicesBufferSize = 10000
 
@@ -123,8 +130,11 @@ function sim.calculateDensity(x, y, pointsInRadius)
     else
         local sampleParticle = x
 
-        for index = 1, sampleParticle.pointsInRadiusAmount do
-            local particle = sampleParticle.pointsInRadius[index]
+        for index = 1, sampleParticle.Creference.neighboursAmount do
+            local id = sampleParticle.Creference.neighbours[index - 1]
+
+            local particle = Particles[Particles.indexTable[id]]
+
             local distance = length(sampleParticle.predictedX - particle.x, sampleParticle.predictedY - particle.y)
             local influence = sim.smoothingFunction(Settings.smoothingRadius, distance)
 
@@ -139,10 +149,12 @@ function calculatePressureForce(sampleParticle, pointsInRadius, x, y, density)
     local pressureX, pressureY = 0, 0
 
     if sampleParticle then
-        for loopIndex = 1, sampleParticle.pointsInRadiusAmount do
-            local particle = sampleParticle.pointsInRadius[loopIndex]
+        for loopIndex = 1, sampleParticle.Creference.neighboursAmount do
+            local id = sampleParticle.Creference.neighbours[loopIndex - 1]
 
-            if particle == sampleParticle then
+            local particle = Particles[Particles.indexTable[id]]
+
+            if particle == sampleParticle or not particle then
                 goto continue
             end
 
@@ -314,7 +326,7 @@ function sim.updatePointsInRadius(sampleParticle)
     if sampleParticle.chunkUpdateTimer <= 0 or pdx * pdx + pdy * pdy > Settings.moveBoundrySqr then
         local centerX, centerY = sim.positionToChunkCoord(sampleParticle.predictedX, sampleParticle.predictedY)
 
-        local pointsIndex = 1
+        local pointsIndex = 0
 
         for chunkX = centerX - 1, centerX + 1 do
             for chunkY = centerY - 1, centerY + 1 do
@@ -339,20 +351,17 @@ function sim.updatePointsInRadius(sampleParticle)
                     local dx = particle.predictedX - sampleParticle.predictedX
                     local dy = particle.predictedY - sampleParticle.predictedY
 
-
-                    if dx * dx + dy * dy < Settings.smoothingRadiusSqr then
-                        sampleParticle.pointsInRadius[pointsIndex] = particle
+                    if dx * dx + dy * dy < Settings.smoothingRadiusSqr and pointsIndex <= Settings.maxNeighbours then
+                        sampleParticle.Creference.neighbours[pointsIndex] = particle.id
                         pointsIndex = pointsIndex + 1
                     end
-
-                    ::skip::
                 end
 
                 ::continue::
             end
         end
 
-        sampleParticle.pointsInRadiusAmount = pointsIndex - 1
+        sampleParticle.Creference.neighboursAmount = pointsIndex
         sampleParticle.chunkUpdateTimer = sampleParticle.chunkUpdateDelay
         sampleParticle.updateX = sampleParticle.predictedX
         sampleParticle.updateY = sampleParticle.predictedY
@@ -383,8 +392,15 @@ function sim.calculateViscosityForce(particle, pointsInRadius, x, y, vx, vy)
             forceY = forceY + influence * (otherParticle.velocityY - vy)
         end
     else
-        for index = 1, particle.pointsInRadiusAmount do
-            local otherParticle = particle.pointsInRadius[index]
+        for index = 1, particle.Creference.neighboursAmount do
+            local otherParticleId = particle.Creference.neighbours[index - 1]
+
+            local otherParticle = Particles[Particles.indexTable[otherParticleId]]
+
+            if not otherParticle then
+                goto continue
+            end
+
             local dx = particle.predictedX - otherParticle.predictedX
             local dy = particle.predictedY - otherParticle.predictedY
             local distanceSqr = dx * dx + dy * dy
@@ -392,6 +408,8 @@ function sim.calculateViscosityForce(particle, pointsInRadius, x, y, vx, vy)
             local influence = sim.viscositySmoothingFunction(distanceSqr, Settings.smoothingRadiusSqr)
             forceX = forceX + influence * (otherParticle.velocityX - particle.velocityX)
             forceY = forceY + influence * (otherParticle.velocityY - particle.velocityY)
+
+            ::continue::
         end
     end
 
@@ -446,28 +464,24 @@ function sim.update(dt, isThread, width, height, threads)
 
         -- wait for the partitioning to be done
         threads[1].doneCheck:demand()
+        -- we can't have the partitioning and the lookup running at the same time
+        threads[2].readyToStartCheck:clear()
+        threads[2].readyToStartCheck:push(true)
 
-        -- local ran, err = coroutine.resume(sim.coroutines.updateLookup) -- runs
-        -- assert(ran, err)
-
-        ran, err = coroutine.resume(sim.coroutines.updateLookupRadius)
-        assert(ran, err)
-
-        threads[1].readyToStartCheck:push(true)                     -- tell the partitioning thread to start
+        threads[2].doneCheck:demand()
+        threads[2].doneCheck:clear()
 
         ran, err = coroutine.resume(sim.coroutines.updateDensities) -- runs
         assert(ran, err)
 
         ran, err = coroutine.resume(sim.coroutines.updatePressureForces, dt)
         assert(ran, err)
+
+        threads[1].readyToStartCheck:push(true) -- tell the partitioning thread to start
     end
-    local averageNeighborCount = 0
     for i, particle in ipairs(Particles) do
         particle:update(dt, isThread, width, height)
-        averageNeighborCount = averageNeighborCount + particle.pointsInRadiusAmount
     end
-    averageNeighborCount = averageNeighborCount / #Particles
-    print(averageNeighborCount)
 end
 
 return sim

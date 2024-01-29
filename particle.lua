@@ -3,20 +3,19 @@ local particleMt = { __index = particleFunctions }
 
 local ffi = require("ffi")
 
-ffi.cdef [[
-    typedef struct {
-        float x;
-        float y;
-    } vec2;
-
+ffi.cdef([[
     typedef struct {
         float x;
         float y;
         float velocityX;
         float velocityY;
-        struct sharedParticleData* neighbours[48];
+        int neighbours[]] .. Settings.maxNeighbours .. [[]; // neighbours id's
+        int neighboursAmount;
+        float mass;
+        float density;
+        int id;
     } sharedParticleData;
-]]
+]])
 
 function newParticle(x, y, restitution, thread, pointer)
     local self = {
@@ -29,20 +28,34 @@ function newParticle(x, y, restitution, thread, pointer)
         density = 1,
         inverseDensity = 1,
         mass = 10,
-        pointsInRadius = {},
         chunkUpdateDelay = Settings.chunkUpdateDelay,
         chunkUpdateTimer = love.math.random(0, Settings.chunkUpdateDelay), -- stagger chunk updates
-        pointsInRadiusAmount = 0,
         updateX = x,
         updateY = y,
-        Creference = (not thread) and ffi.new("sharedParticleData", { x = x, y = y, velocityX = 0, velocityY = 0 }),
+        Creference = (not thread) and
+            ffi.new("sharedParticleData",
+                {
+                    x = x,
+                    y = y,
+                    velocityX = 0,
+                    velocityY = 0,
+                    neighboursAmount = 0,
+                    neighbours = { -1 },
+                    mass = 10,
+                    density = 1,
+                    id = #Particles + 1
+                }
+            ),
+        id = #Particles + 1,
     }
     self.inverseMass = 1 / self.mass
     if not thread then
         self.CPointer = ffi.new("sharedParticleData*", self.Creference)
     end
 
-    table.insert(Particles, self)
+    setmetatable(self, particleMt)
+
+    Particles:add(self)
 
     if not thread then
         local pointerNum = tonumber(ffi.cast("uint64_t", self.CPointer))
@@ -50,13 +63,11 @@ function newParticle(x, y, restitution, thread, pointer)
     end
 
     if thread then
-        local ptr = pointer
-        local castPtr = ffi.cast("void*", ptr)
-
-        self.Creference = ffi.cast("sharedParticleData*", castPtr)
+        self.Creference = ffi.cast("sharedParticleData*", pointer)
+        self.CPointer = self.Creference
     end
 
-    return setmetatable(self, particleMt)
+    return self
 end
 
 function particleFunctions:update(dt, thread, width, height)

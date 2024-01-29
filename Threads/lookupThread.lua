@@ -2,7 +2,6 @@ Settings, receive, send, width, height, canStart, done = unpack(...)
 
 isLookupThread = true
 require("vectorMath")
-require("particle")
 sim = require("fluidSimulation")
 require("vec")
 require("love.timer")
@@ -53,7 +52,6 @@ end
 
 createAndSentLookupPointers()
 
-Particles = {}
 
 local targetFramerate = 1 / 120
 

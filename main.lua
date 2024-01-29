@@ -16,6 +16,7 @@ function love.load()
         chunkUpdateDelay = 60, -- ticks
         -- if the particle moves more than 10 pixels, or the chunkUpdateDelay is reached, update the chunk the particle is in
         moveBoundry = 5,
+        maxNeighbours = 100,
     }
     Settings.chunkSize = Settings.smoothingRadius
     Settings.inverseChunkSize = 1 / Settings.chunkSize
@@ -30,7 +31,6 @@ function love.load()
     Box2DWorld = love.physics.newWorld(0, 9.81 * Settings.scale, true)
 
     require("vectorMath")
-    require("tables")
 
     FluidSimulation = {
         Thread = {
@@ -40,11 +40,11 @@ function love.load()
         }
     }
 
-    require("particle")
+
     require("vec")
     require("hull")
 
-    Particles = {}
+    sim = require("fluidSimulation")
 
     for x = -30, 30 do
         for y = -30, 30 do
@@ -76,8 +76,6 @@ function love.load()
     print("start thread")
     FluidSimulation.Thread.thread:start({ copyForThreadSend(Settings), FluidSimulation.Thread.send,
         FluidSimulation.Thread.receive, love.graphics.getWidth(), love.graphics.getHeight() })
-
-    sim = require("fluidSimulation")
 end
 
 function copyForThreadSend(x, t)

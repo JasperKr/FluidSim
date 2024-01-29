@@ -1,7 +1,7 @@
 Settings, receive, send, width, height = unpack(...)
 
 require("vectorMath")
-require("particle")
+
 sim = require("fluidSimulation")
 require("vec")
 require("love.timer")
@@ -28,14 +28,29 @@ local threads = {
         receive = love.thread.newChannel(),
         readyToStartCheck = love.thread.newChannel(),
         doneCheck = love.thread.newChannel(),
+    },
+    {
+        name = "neighboursThread",
+        thread = love.thread.newThread("Threads/neighboursThread.lua"),
+        send = love.thread.newChannel(),
+        receive = love.thread.newChannel(),
+        readyToStartCheck = love.thread.newChannel(),
+        doneCheck = love.thread.newChannel(),
     }
 }
 
-threads[1].thread:start({ copyForThreadSend(Settings), threads[1].send,
+local threadSafeSettings = copyForThreadSend(Settings)
+
+threads[1].thread:start({ threadSafeSettings, threads[1].send,
     threads[1].receive, width, height, threads[1].readyToStartCheck, threads[1].doneCheck })
+threads[2].thread:start({ threadSafeSettings, threads[2].send,
+    threads[2].receive, width, height, threads[2].readyToStartCheck, threads[2].doneCheck })
 
 local function updatePointers(data)
     assert(data.type == "dataPointers")
+
+    threads[2].send:push(data)
+
     local indicesPtrNum = data.indices
     local lookupPtrNum = data.lookup
 
@@ -59,7 +74,7 @@ updatePointers(threads[1].receive:demand())
 
 print("lookup thread started")
 
-Particles = {}
+
 
 local targetFramerate = 1 / 60
 local simFrameRate = 1 / 120
@@ -70,8 +85,6 @@ while true do
     local startTime = love.timer.getTime()
 
     local msg = receive:pop()
-
-    print(sim.spatialLookupLength, sim.startIndicesLength, startedOtherThreads)
 
     while msg do
         if msg.type == "addParticle" then
@@ -86,8 +99,6 @@ while true do
         msg = receive:pop()
     end
 
-    print(sim.spatialLookupLength, sim.startIndicesLength, startedOtherThreads)
-
     for _, thread in ipairs(threads) do
         local msg = thread.receive:pop()
 
@@ -97,13 +108,13 @@ while true do
             elseif msg.type == "arrayLengths" then
                 sim.startIndicesLength = msg.indicesLength
                 sim.spatialLookupLength = msg.lookupLength
+                threads[2].send:push(msg)
             end
 
             msg = thread.receive:pop()
         end
     end
 
-    print(sim.spatialLookupLength, sim.startIndicesLength, startedOtherThreads)
     if sim.spatialLookupLength <= sim.spatialLookupBufferSize and
         sim.startIndicesLength <= sim.startIndicesBufferSize and startedOtherThreads then
         sim.update(simFrameRate, true, width, height, threads)
