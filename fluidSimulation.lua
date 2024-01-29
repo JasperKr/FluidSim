@@ -6,8 +6,8 @@ end
 
 local sortFunction = require("quickSort")
 
-sim.spatialLookupBufferSize = 1000
-sim.startIndicesBufferSize = 1000
+sim.spatialLookupBufferSize = 10000
+sim.startIndicesBufferSize = 10000
 
 sim.spatialLookupBufferIncrement = 2
 sim.startIndicesBufferIncrement = 2
@@ -28,9 +28,12 @@ sim.spatialLookup = ffi.new("spatialLookupEntry[?]", sim.spatialLookupBufferSize
 
 sim.startIndices = ffi.new("int32_t[?]", sim.startIndicesBufferSize, -1)
 
-local function setSpatialLookupValue(index, value)
+local function setSpatialLookupValue(index, value, change)
     if tonumber(sim.spatialLookup[index].key) == -1 then
         sim.spatialLookupLength = sim.spatialLookupLength + 1
+        if not change then
+            sim.spatialLookup[index] = ffi.new("spatialLookupEntry", { index = -2, key = -2 })
+        end
     end
 
     -- -2 because we can't index the last element the next time
@@ -39,13 +42,20 @@ local function setSpatialLookupValue(index, value)
         local new = ffi.new("spatialLookupEntry[?]", sim.spatialLookupBufferSize, emptySpatialLookupEntry)
         ffi.copy(new, sim.spatialLookup, sim.spatialLookupLength * ffi.sizeof("spatialLookupEntry"))
         sim.spatialLookup = new
+        createAndSentLookupPointers()
     end
-    sim.spatialLookup[index] = ffi.new("spatialLookupEntry", value)
+
+    if change then
+        sim.spatialLookup[index] = ffi.new("spatialLookupEntry", value)
+    end
 end
 
-local function setStartIndicesValue(index, value)
+local function setStartIndicesValue(index, value, change)
     if sim.startIndices[index] == -1 then
         sim.startIndicesLength = sim.startIndicesLength + 1
+        if not change then
+            sim.startIndices[index] = -2
+        end
     end
 
     -- -2 because we can't index the last element the next time
@@ -54,13 +64,12 @@ local function setStartIndicesValue(index, value)
         local new = ffi.new("int32_t[?]", sim.startIndicesBufferSize, -1)
         ffi.copy(new, sim.startIndices, sim.startIndicesLength * ffi.sizeof("int32_t"))
         sim.startIndices = new
+        createAndSentLookupPointers()
     end
 
-    sim.startIndices[index] = value
-end
-
-local function setStartIndicesValue2(index, value)
-    sim.startIndices[index] = value
+    if change then
+        sim.startIndices[index] = value
+    end
 end
 
 local function pow4(x)
@@ -229,15 +238,24 @@ local function sortSpatialLookup()
     -- test:
     --sim.spatialLookupLength = #sim.spatialLookup
     --insertion_sort_impl(sim.spatialLookup, 1, sim.spatialLookupLength, tableSort)
-    sortFunction(sim.spatialLookup, 0, sim.spatialLookupLength, tableSort, swapFunction)
+    sortFunction(sim.spatialLookup, 1, sim.spatialLookupLength, tableSort, swapFunction)
+end
+
+function sim.prepareSpatialLookup()
+    for index, particle in ipairs(Particles) do
+        local chunkX, chunkY = sim.positionToChunkCoord(particle.predictedX, particle.predictedY)
+        local key = sim.positionToIndex(chunkX, chunkY)
+        setSpatialLookupValue(index, { index = index, key = key }, false)
+        setStartIndicesValue(index, math.huge, false)
+    end
 end
 
 function sim.updateSpatialLookup()
     for index, particle in ipairs(Particles) do
         local chunkX, chunkY = sim.positionToChunkCoord(particle.predictedX, particle.predictedY)
         local key = sim.positionToIndex(chunkX, chunkY)
-        setSpatialLookupValue(index, { index = index, key = key })
-        setStartIndicesValue(index, math.huge)
+        setSpatialLookupValue(index, { index = index, key = key }, true)
+        setStartIndicesValue(index, math.huge, true)
     end
 
     sortSpatialLookup()
@@ -248,7 +266,7 @@ function sim.updateSpatialLookup()
         local previousKey = index == 1 and math.huge or sim.spatialLookup[index - 1].key
 
         if key and key == key and key ~= previousKey then
-            setStartIndicesValue(key, index)
+            setStartIndicesValue(key, index, true)
         end
     end
 end
@@ -262,7 +280,7 @@ function sim.getPointsInRadius(x, y)
         for chunkY = centerY - 1, centerY + 1 do
             local key = sim.positionToIndex(chunkX, chunkY)
             local startIndex = tonumber(sim.startIndices[key])
-            if startIndex and startIndex ~= -1 then
+            if startIndex and startIndex ~= -1 and startIndex ~= -2 then
                 for index = startIndex, sim.spatialLookupLength do
                     if tonumber(sim.spatialLookup[index].key) ~= key then
                         break
@@ -302,7 +320,7 @@ function sim.updatePointsInRadius(sampleParticle)
             for chunkY = centerY - 1, centerY + 1 do
                 local key = sim.positionToIndex(chunkX, chunkY)
                 local startIndex = tonumber(sim.startIndices[key])
-                if not startIndex or startIndex == -1 then
+                if not startIndex or startIndex == -1 or startIndex == -2 then
                     goto continue
                 end
 
@@ -317,10 +335,6 @@ function sim.updatePointsInRadius(sampleParticle)
 
                     local particleIndex = tonumber(sim.spatialLookup[index].index)
                     local particle = Particles[particleIndex]
-
-                    if not particle then
-                        goto skip
-                    end
 
                     local dx = particle.predictedX - sampleParticle.predictedX
                     local dy = particle.predictedY - sampleParticle.predictedY
@@ -423,18 +437,23 @@ sim.coroutines = {
 
 
 
-function sim.update(dt, isThread, width, height)
+function sim.update(dt, isThread, width, height, threads)
     if isThread then
         for i, particle in ipairs(Particles) do
             particle.predictedX = particle.x + particle.velocityX * 0.0083333333
             particle.predictedY = particle.y + particle.velocityY * 0.0083333333
         end
 
-        local ran, err = coroutine.resume(sim.coroutines.updateLookup) -- runs
-        assert(ran, err)
+        -- wait for the partitioning to be done
+        threads[1].doneCheck:demand()
+
+        -- local ran, err = coroutine.resume(sim.coroutines.updateLookup) -- runs
+        -- assert(ran, err)
 
         ran, err = coroutine.resume(sim.coroutines.updateLookupRadius) -- error after a while
         assert(ran, err)
+
+        threads[1].readyToStartCheck:push(true)                     -- tell the partitioning thread to start
 
         ran, err = coroutine.resume(sim.coroutines.updateDensities) -- runs
         assert(ran, err)

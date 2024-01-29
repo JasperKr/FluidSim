@@ -1,4 +1,4 @@
-Settings, receive, send, width, height, indicesPtrNum, lookupPtrNum = unpack(...)
+Settings, receive, send, width, height, canStart, done = unpack(...)
 
 isLookupThread = true
 require("vectorMath")
@@ -8,20 +8,54 @@ require("vec")
 require("love.timer")
 require("love.math")
 
+function createAndSentLookupPointers()
+    local indices, lookup = sim.startIndices, sim.spatialLookup
 
-local indicesCastPtr = ffi.cast("void*", indicesPtrNum)
-local lookupCastPtr = ffi.cast("void*", lookupPtrNum)
+    local indicesPtr = ffi.new("int32_t*", indices)
+    local lookupPtr = ffi.new("spatialLookupEntry*", lookup)
 
-local indicesPtr = ffi.cast("int32_t*", indicesCastPtr)
-local lookupPtr = ffi.cast("spatialLookupEntry*", lookupCastPtr)
+    local indicesPtrNum = tonumber(ffi.cast("uint64_t", indicesPtr))
+    local lookupPtrNum = tonumber(ffi.cast("uint64_t", lookupPtr))
 
-sim.startIndices = indicesPtr
-sim.spatialLookup = lookupPtr
+    --[[
+        this thread is responsible for updating the spatial lookup table,
+        but, the spatial lookup table size can change so we need to recreate it sometimes.
+        so we store the pointer to the lookup table in an ffi int64_t and pass it to the other threads when we recreate it.
+    ]]
+
+    send:push({
+        type = "dataPointers",
+        indices = indicesPtrNum,
+        lookup = lookupPtrNum,
+        indicesLength = sim.startIndicesLength,
+        lookupLength = sim.spatialLookupLength,
+        indicesMaxSize = sim.startIndicesBufferSize,
+        lookupMaxSize = sim.spatialLookupBufferSize
+    })
+end
+
+local lastIndicesLength
+local lastLookupLength
+
+function updateArrayLengths()
+    if lastIndicesLength == sim.startIndicesLength and lastLookupLength == sim.spatialLookupLength then
+        return
+    end
+
+    send:push({
+        type = "arrayLengths",
+        indicesLength = sim.startIndicesLength,
+        lookupLength = sim.spatialLookupLength
+    })
+    lastIndicesLength = sim.startIndicesLength
+    lastLookupLength = sim.spatialLookupLength
+end
+
+createAndSentLookupPointers()
 
 Particles = {}
 
-local targetFramerate = 1 / 60
-local simFrameRate = 1 / 120
+local targetFramerate = 1 / 120
 
 function handleMessages(msg)
     msg = msg ~= nil and msg or receive:pop() -- so we can use :demand if we want
@@ -56,10 +90,15 @@ while true do
         particle.predictedY = particle.y + particle.velocityY * 0.0083333333
     end
 
-    local succes, err = coroutine.resume(sim.coroutines.updateLookup)
-    if not succes then
-        error(err)
+    sim.prepareSpatialLookup()
+
+    if canStart:pop() then
+        sim.updateSpatialLookup()
+
+        done:push(true)
     end
+
+    updateArrayLengths()
 
     local endTime = love.timer.getTime()
 

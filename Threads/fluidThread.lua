@@ -26,30 +26,52 @@ local threads = {
         thread = love.thread.newThread("Threads/lookupThread.lua"),
         send = love.thread.newChannel(),
         receive = love.thread.newChannel(),
+        readyToStartCheck = love.thread.newChannel(),
+        doneCheck = love.thread.newChannel(),
     }
 }
 
--- local indices, lookup = sim.startIndices, sim.spatialLookup
+threads[1].thread:start({ copyForThreadSend(Settings), threads[1].send,
+    threads[1].receive, width, height, threads[1].readyToStartCheck, threads[1].doneCheck })
 
--- local indicesPtr = ffi.new("int32_t*", indices)
--- local lookupPtr = ffi.new("spatialLookupEntry*", lookup)
+local function updatePointers(data)
+    assert(data.type == "dataPointers")
+    local indicesPtrNum = data.indices
+    local lookupPtrNum = data.lookup
 
--- local indicesPtrNum = tonumber(ffi.cast("uint64_t", indicesPtr))
--- local lookupPtrNum = tonumber(ffi.cast("uint64_t", lookupPtr))
+    local indicesCastPtr = ffi.cast("void*", indicesPtrNum)
+    local lookupCastPtr = ffi.cast("void*", lookupPtrNum)
 
+    local indicesPtr = ffi.cast("int32_t*", indicesCastPtr)
+    local lookupPtr = ffi.cast("spatialLookupEntry*", lookupCastPtr)
 
---threads[1].thread:start({ copyForThreadSend(Settings), threads[1].send,
---    threads[1].receive, width, height, indicesPtrNum, lookupPtrNum })
+    sim.startIndices = indicesPtr
+    sim.spatialLookup = lookupPtr
+
+    sim.startIndicesLength = data.indicesLength
+    sim.spatialLookupLength = data.lookupLength
+
+    sim.startIndicesBufferSize = data.indicesMaxSize
+    sim.spatialLookupBufferSize = data.lookupMaxSize
+end
+
+updatePointers(threads[1].receive:demand())
+
+print("lookup thread started")
 
 Particles = {}
 
 local targetFramerate = 1 / 60
 local simFrameRate = 1 / 120
 
+local startedOtherThreads = false
+
 while true do
     local startTime = love.timer.getTime()
 
     local msg = receive:pop()
+
+    print(sim.spatialLookupLength, sim.startIndicesLength, startedOtherThreads)
 
     while msg do
         if msg.type == "addParticle" then
@@ -64,7 +86,37 @@ while true do
         msg = receive:pop()
     end
 
-    sim.update(simFrameRate, true, width, height)
+    print(sim.spatialLookupLength, sim.startIndicesLength, startedOtherThreads)
+
+    for _, thread in ipairs(threads) do
+        local msg = thread.receive:pop()
+
+        while msg do
+            if msg.type == "dataPointers" then
+                updatePointers(msg)
+            elseif msg.type == "arrayLengths" then
+                sim.startIndicesLength = msg.indicesLength
+                sim.spatialLookupLength = msg.lookupLength
+            end
+
+            msg = thread.receive:pop()
+        end
+    end
+
+    print(sim.spatialLookupLength, sim.startIndicesLength, startedOtherThreads)
+    if sim.spatialLookupLength <= sim.spatialLookupBufferSize and
+        sim.startIndicesLength <= sim.startIndicesBufferSize and startedOtherThreads then
+        sim.update(simFrameRate, true, width, height, threads)
+    end
+
+    if not startedOtherThreads then
+        startedOtherThreads = true
+        for _, thread in ipairs(threads) do
+            thread.readyToStartCheck:push(true)
+        end
+    end
+
+
 
     local endTime = love.timer.getTime()
 

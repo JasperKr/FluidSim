@@ -46,10 +46,10 @@ function love.load()
 
     Particles = {}
 
-    for x = -50, 50 do
+    for x = -30, 30 do
         for y = -30, 30 do
-            newParticle(x * 12 + love.graphics.getWidth() / 2 + love.math.random(),
-                y * 12 + love.graphics.getHeight() / 2 + love.math.random(), 0.8, false)
+            newParticle(x * 30 + love.graphics.getWidth() / 2 + love.math.random(),
+                y * 20 + love.graphics.getHeight() / 2 + love.math.random(), 0.8, false)
         end
     end
 
@@ -137,10 +137,12 @@ function love.draw()
         love.graphics.clear(0, 0, 0, 1)
         love.graphics.setBlendMode("add", "premultiplied")
         for i, particle in ipairs(Particles) do
-            particle:draw()
+            particle:draw(i)
         end
         love.graphics.setBlendMode("alpha")
+
         love.graphics.setCanvas()
+
         love.graphics.setColor(1, 1, 1, 1)
         if not Settings.debugDraw then
             love.graphics.setShader(Settings.waterEffectShader)

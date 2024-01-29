@@ -84,7 +84,7 @@ function particleFunctions:update(dt, thread, width, height)
     end
 end
 
-function particleFunctions:draw()
+function particleFunctions:draw(i)
     if Settings.debugDraw then
         local velocity = vectorMath.length(self.velocityX, self.velocityY)
         local gradientMax = 1000
