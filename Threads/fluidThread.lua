@@ -1,5 +1,7 @@
 Settings, receive, send, width, height = unpack(...)
 
+Width, Height = width, height
+
 require("vectorMath")
 
 sim = require("fluidSimulation")
@@ -28,14 +30,6 @@ local threads = {
         receive = love.thread.newChannel(),
         readyToStartCheck = love.thread.newChannel(),
         doneCheck = love.thread.newChannel(),
-    },
-    {
-        name = "neighboursThread",
-        thread = love.thread.newThread("Threads/neighboursThread.lua"),
-        send = love.thread.newChannel(),
-        receive = love.thread.newChannel(),
-        readyToStartCheck = love.thread.newChannel(),
-        doneCheck = love.thread.newChannel(),
     }
 }
 
@@ -43,25 +37,15 @@ local threadSafeSettings = copyForThreadSend(Settings)
 
 threads[1].thread:start({ threadSafeSettings, threads[1].send,
     threads[1].receive, width, height, threads[1].readyToStartCheck, threads[1].doneCheck })
-threads[2].thread:start({ threadSafeSettings, threads[2].send,
-    threads[2].receive, width, height, threads[2].readyToStartCheck, threads[2].doneCheck })
 
 local function updatePointers(data)
     assert(data.type == "dataPointers")
 
-    threads[2].send:push(data)
+    sim.startIndicesData = data.indices
+    sim.spatialLookupData = data.lookup
 
-    local indicesPtrNum = data.indices
-    local lookupPtrNum = data.lookup
-
-    local indicesCastPtr = ffi.cast("void*", indicesPtrNum)
-    local lookupCastPtr = ffi.cast("void*", lookupPtrNum)
-
-    local indicesPtr = ffi.cast("int32_t*", indicesCastPtr)
-    local lookupPtr = ffi.cast("spatialLookupEntry*", lookupCastPtr)
-
-    sim.startIndices = indicesPtr
-    sim.spatialLookup = lookupPtr
+    sim.startIndices = ffi.cast("int32_t*", sim.startIndicesData:getFFIPointer())
+    sim.spatialLookup = ffi.cast("spatialLookupEntry*", sim.spatialLookupData:getFFIPointer())
 
     sim.startIndicesLength = data.indicesLength
     sim.spatialLookupLength = data.lookupLength
@@ -70,11 +54,9 @@ local function updatePointers(data)
     sim.spatialLookupBufferSize = data.lookupMaxSize
 end
 
-updatePointers(threads[1].receive:demand())
-
-print("lookup thread started")
-
-
+local pointers = threads[1].receive:demand()
+updatePointers(pointers)
+send:push(pointers)
 
 local targetFramerate = 1 / 60
 local simFrameRate = 1 / 120
@@ -85,10 +67,17 @@ while true do
     local startTime = love.timer.getTime()
 
     local msg = receive:pop()
+    local canContinue = false
 
-    while msg do
+    while msg or not canContinue do
+        if not msg and not canContinue then -- if we're waiting for the go ahead from other threads but don't have a message, demand one
+            msg = receive:demand()
+        end
+
         if msg.type == "addParticle" then
-            newParticle(msg.data[1], msg.data[2], msg.data[3], true, msg.pointer)
+            newParticle(msg.data[1], msg.data[2], msg.data[3], true, msg.data[4])
+        elseif msg.type == "update" then
+            canContinue = true
         end
 
         -- forward message to other threads
@@ -108,8 +97,8 @@ while true do
             elseif msg.type == "arrayLengths" then
                 sim.startIndicesLength = msg.indicesLength
                 sim.spatialLookupLength = msg.lookupLength
-                threads[2].send:push(msg)
             end
+            send:push(msg)
 
             msg = thread.receive:pop()
         end
@@ -126,8 +115,6 @@ while true do
             thread.readyToStartCheck:push(true)
         end
     end
-
-
 
     local endTime = love.timer.getTime()
 

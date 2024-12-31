@@ -22,11 +22,14 @@ function newHull(body, fixture, shape)
     fixture:setDensity(t.density)
     body:resetMassData()
 
+    body:setLinearDamping(0.4)
+    body:setAngularDamping(0.4)
+
     return setmetatable(t, hullMt)
 end
 
-local function checkAndResolve(hull, self, x, y)
-    local localPosX, localPosY = hull.body:getLocalPoint(x, y)
+local function checkAndResolve(hull, self)
+    local localPosX, localPosY = hull.body:getLocalPoint(self.CData.x, self.CData.y)
 
     local minX, minY, maxX, maxY = hull.shape:computeAABB(0, 0, 0)
 
@@ -40,34 +43,33 @@ local function checkAndResolve(hull, self, x, y)
             localPosY
         )
 
+        ---@cast hull {body: love.Body}
+
         intersectionX, intersectionY = hull.body:getWorldPoint(intersectionX, intersectionY)
 
-
         if dist < self.radius * self.radius or sign < 0 then -- collision or inside
-            local normalX, normalY = normalize(diffX, diffY)
-            normalX, normalY = hull.body:getWorldVector(normalX, normalY)
+            local normalX, normalY = normalize(hull.body:getWorldVector(diffX, diffY))
 
             local overlap = -math.sqrt(dist) * sign
 
-            self.x = self.x - normalX * overlap
-            self.y = self.y - normalY * overlap
+            local massDivScale = self.realMass / Settings.scale
 
-            local forceInDirection = vectorMath.dot(self.velocityX, self.velocityY, normalX, normalY)
+            local forceInDirection = math.max(0.0, vectorMath.dot(self.CData.velocityX * massDivScale,
+                self.CData.velocityY * massDivScale, normalX, normalY))
+
+            self.CData.x = self.CData.x - normalX * overlap
+            self.CData.y = self.CData.y - normalY * overlap
 
             local fx = normalX * forceInDirection
             local fy = normalY * forceInDirection
 
-            self.velocityX = self.velocityX - fx
-            self.velocityY = self.velocityY - fy
+            self.CData.velocityX = self.CData.velocityX - fx / massDivScale
+            self.CData.velocityY = self.CData.velocityY - fy / massDivScale
 
-            hull.body:applyLinearImpulse(fx * Settings.fluidMass * self.mass, fy * Settings.fluidMass * self.mass,
+            hull.body:applyLinearImpulse(fx * massDivScale, fy * massDivScale,
                 intersectionX, intersectionY)
         end
     end
-end
-
-local function positionToIndex(x, y)
-    return (x * 5376 + y * 9737333) % #Particles
 end
 
 function hullFunctions:getParticles(checkPredicted)
@@ -77,58 +79,58 @@ function hullFunctions:getParticles(checkPredicted)
     maxX = maxX + Settings.particleRadius
     maxY = maxY + Settings.particleRadius
     local points = {}
-    local predictedParticles = {}
 
     local shapeMinX, shapeMinY, shapeMaxX, shapeMaxY = self.shape:computeAABB(0, 0, 0)
 
-    for x = math.floor(minX * Settings.inverseChunkSize), math.ceil(maxX * Settings.inverseChunkSize) do
-        for y = math.floor(minY * Settings.inverseChunkSize), math.ceil(maxY * Settings.inverseChunkSize) do
-            local key = positionToIndex(x, y)
-            local startIndex = sim.startIndices[key]
-            if startIndex then
-                for index = startIndex, #sim.spatialLookup do
-                    if sim.spatialLookup[index][2] ~= key then
+    minX = math.floor(minX * Settings.inverseChunkSize)
+    minY = math.floor(minY * Settings.inverseChunkSize)
+    maxX = math.ceil(maxX * Settings.inverseChunkSize)
+    maxY = math.ceil(maxY * Settings.inverseChunkSize)
+
+    for x = minX, maxX do
+        for y = minY, maxY do
+            local key = sim.positionToIndex(x, y)
+            local startIndex = tonumber(sim.startIndices[key])
+
+            if startIndex == -2147483648 then
+                startIndex = math.huge
+            end
+
+            if startIndex and startIndex ~= -1 and startIndex ~= -2 then
+                for index = startIndex, sim.spatialLookupLength do
+                    if tonumber(sim.spatialLookup[index].key) ~= key then
                         break
                     end
 
-                    local particleIndex = sim.spatialLookup[index][1]
+                    local particleIndex = tonumber(sim.spatialLookup[index].index)
                     local particle = Particles[particleIndex]
 
-                    local objectSpaceX, objectSpaceY = self.body:getLocalPoint(particle.x, particle.y)
+                    local objectSpaceX, objectSpaceY = self.body:getLocalPoint(particle.CData.x, particle.CData.y)
 
                     if circleInAABB(shapeMinX, shapeMinY, shapeMaxX, shapeMaxY, objectSpaceX, objectSpaceY, particle.radius) then
                         table.insert(points, particle)
-                    elseif checkPredicted then
-                        objectSpaceX, objectSpaceY = self.body:getLocalPoint(particle.predictedX, particle.predictedY)
-                        if circleInAABB(shapeMinX, shapeMinY, shapeMaxX,
-                                shapeMaxY, objectSpaceX, objectSpaceY, particle.radius) then
-                            table.insert(points, particle)
-                        end
+                        -- elseif checkPredicted then
+                        --     objectSpaceX, objectSpaceY = self.body:getLocalPoint(particle.predictedX, particle.predictedY)
+                        --     if circleInAABB(shapeMinX, shapeMinY, shapeMaxX,
+                        --             shapeMaxY, objectSpaceX, objectSpaceY, particle.radius) then
+                        --         table.insert(points, particle)
+                        --     end
                     end
                 end
             end
         end
     end
 
-    return points, predictedParticles
+    return points
 end
 
 function hullFunctions:update(dt)
-    local particles, predictedParticles = self:getParticles()
-    for _, particle in ipairs(particles) do
-        checkAndResolve(self, particle, particle.x, particle.y)
-        particle.Creference.x = particle.x
-        particle.Creference.y = particle.y
-        particle.Creference.velocityX = particle.velocityX
-        particle.Creference.velocityY = particle.velocityY
+    local particles = self:getParticles()
+    if #particles > 0 then
+        -- print(#particles)
     end
-    for _, particle in ipairs(predictedParticles) do
-        checkAndResolve(self, particle, particle.predictedX, particle.predictedY)
-
-        particle.Creference.x = particle.x
-        particle.Creference.y = particle.y
-        particle.Creference.velocityX = particle.velocityX
-        particle.Creference.velocityY = particle.velocityY
+    for _, particle in ipairs(particles) do
+        checkAndResolve(self, particle)
     end
 end
 

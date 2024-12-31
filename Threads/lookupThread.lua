@@ -7,25 +7,11 @@ require("vec")
 require("love.timer")
 require("love.math")
 
-function createAndSentLookupPointers()
-    local indices, lookup = sim.startIndices, sim.spatialLookup
-
-    local indicesPtr = ffi.new("int32_t*", indices)
-    local lookupPtr = ffi.new("spatialLookupEntry*", lookup)
-
-    local indicesPtrNum = tonumber(ffi.cast("uint64_t", indicesPtr))
-    local lookupPtrNum = tonumber(ffi.cast("uint64_t", lookupPtr))
-
-    --[[
-        this thread is responsible for updating the spatial lookup table,
-        but, the spatial lookup table size can change so we need to recreate it sometimes.
-        so we store the pointer to the lookup table in an ffi int64_t and pass it to the other threads when we recreate it.
-    ]]
-
+function sendDataReferences()
     send:push({
         type = "dataPointers",
-        indices = indicesPtrNum,
-        lookup = lookupPtrNum,
+        indices = sim.startIndicesData,
+        lookup = sim.spatialLookupData,
         indicesLength = sim.startIndicesLength,
         lookupLength = sim.spatialLookupLength,
         indicesMaxSize = sim.startIndicesBufferSize,
@@ -46,30 +32,25 @@ function updateArrayLengths()
         indicesLength = sim.startIndicesLength,
         lookupLength = sim.spatialLookupLength
     })
+
     lastIndicesLength = sim.startIndicesLength
     lastLookupLength = sim.spatialLookupLength
 end
 
-createAndSentLookupPointers()
-
+sendDataReferences()
 
 local targetFramerate = 1 / 120
 
 function handleMessages(msg)
     msg = msg ~= nil and msg or receive:pop() -- so we can use :demand if we want
-    local typesHandled = {}
 
     while msg do
         if msg.type == "addParticle" then
-            newParticle(msg.data[1], msg.data[2], msg.data[3], true, msg.pointer)
+            newParticle(msg.data[1], msg.data[2], msg.data[3], true, msg.data[4])
         end
-
-        table.insert(typesHandled, msg.type)
 
         msg = receive:pop()
     end
-
-    return typesHandled
 end
 
 while true do
@@ -78,11 +59,11 @@ while true do
     handleMessages()
 
     for i, particle in ipairs(Particles) do
-        particle.x = particle.Creference.x
-        particle.y = particle.Creference.y
+        particle.x = particle.CData.x
+        particle.y = particle.CData.y
 
-        particle.velocityX = particle.Creference.velocityX
-        particle.velocityY = particle.Creference.velocityY
+        particle.velocityX = particle.CData.velocityX
+        particle.velocityY = particle.CData.velocityY
 
         particle.predictedX = particle.x + particle.velocityX * 0.0083333333
         particle.predictedY = particle.y + particle.velocityY * 0.0083333333

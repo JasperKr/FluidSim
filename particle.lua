@@ -5,10 +5,12 @@ local ffi = require("ffi")
 
 ffi.cdef([[
     typedef struct {
-        float x;
-        float y;
-        float velocityX;
-        float velocityY;
+        double x;
+        double y;
+        double velocityX;
+        double velocityY;
+        double predictedX;
+        double predictedY;
         int neighbours[]] .. Settings.maxNeighbours .. [[]; // neighbours id's
         int neighboursAmount;
         float mass;
@@ -17,40 +19,46 @@ ffi.cdef([[
     } sharedParticleData;
 ]])
 
-function newParticle(x, y, restitution, thread, pointer)
+local particleSize = ffi.sizeof("sharedParticleData")
+
+function newParticle(x, y, restitution, thread, ByteData)
+    if not thread then
+        ByteData = love.data.newByteData(particleSize)
+    end
+
+    local CData = ffi.cast("sharedParticleData*", ByteData:getFFIPointer())
+
     local self = {
-        x = x,
-        y = y,
-        velocityX = 0,
-        velocityY = 0,
         radius = Settings.particleRadius,
         restitution = restitution or 0.9,
         density = 1,
         inverseDensity = 1,
         mass = 10,
+        realMass = 10 * Settings.fluidMass,
         chunkUpdateDelay = Settings.chunkUpdateDelay,
         chunkUpdateTimer = love.math.random(0, Settings.chunkUpdateDelay), -- stagger chunk updates
         updateX = x,
         updateY = y,
-        Creference = (not thread) and
-            ffi.new("sharedParticleData",
-                {
-                    x = x,
-                    y = y,
-                    velocityX = 0,
-                    velocityY = 0,
-                    neighboursAmount = 0,
-                    neighbours = { -1 },
-                    mass = 10,
-                    density = 1,
-                    id = #Particles + 1
-                }
-            ),
-        id = #Particles + 1,
+        ByteData = ByteData,
+        CData = CData,
+        id = thread and CData.id or #Particles + 1,
     }
     self.inverseMass = 1 / self.mass
+
     if not thread then
-        self.CPointer = ffi.new("sharedParticleData*", self.Creference)
+        CData.x = x
+        CData.y = y
+        CData.velocityX = 0
+        CData.velocityY = 0
+        CData.predictedX = x
+        CData.predictedY = y
+        CData.neighboursAmount = 0
+        for i = 0, Settings.maxNeighbours - 1 do
+            CData.neighbours[i] = -1
+        end
+        CData.mass = self.mass
+        CData.density = self.density
+        CData.id = self.id
     end
 
     setmetatable(self, particleMt)
@@ -58,13 +66,7 @@ function newParticle(x, y, restitution, thread, pointer)
     Particles:add(self)
 
     if not thread then
-        local pointerNum = tonumber(ffi.cast("uint64_t", self.CPointer))
-        FluidSimulation.Thread.send:push({ type = "addParticle", data = { x, y, restitution }, pointer = pointerNum })
-    end
-
-    if thread then
-        self.Creference = ffi.cast("sharedParticleData*", pointer)
-        self.CPointer = self.Creference
+        FluidSimulation.Thread.send:push({ type = "addParticle", data = { x, y, restitution, ByteData } })
     end
 
     return self
@@ -72,33 +74,21 @@ end
 
 function particleFunctions:update(dt, thread, width, height)
     if thread then
-        self.x = self.x + self.velocityX * dt
-        self.y = self.y + self.velocityY * dt
+        self.CData.x = self.CData.x + self.CData.velocityX * dt
+        self.CData.y = self.CData.y + self.CData.velocityY * dt
 
         self:resolveCollisions(width, height)
 
-        self.velocityY = self.velocityY + Settings.gravity * dt
+        self.CData.velocityY = self.CData.velocityY + Settings.gravity * dt
 
-        self.Creference.x = self.x
-        self.Creference.y = self.y
-
-        self.Creference.velocityX = self.velocityX
-        self.Creference.velocityY = self.velocityY
-    else
-        self.x = self.Creference.x
-        self.y = self.Creference.y
-
-        self.velocityX = self.Creference.velocityX
-        self.velocityY = self.Creference.velocityY
-
-        self.predictedX = self.x + self.velocityX * (1 / 60)
-        self.predictedY = self.y + self.velocityY * (1 / 60)
+        self.CData.predictedX = self.CData.x + self.CData.velocityX * (1 / 60)
+        self.CData.predictedY = self.CData.y + self.CData.velocityY * (1 / 60)
     end
 end
 
 function particleFunctions:draw(i)
     if Settings.debugDraw then
-        local velocity = vectorMath.length(self.velocityX, self.velocityY)
+        local velocity = vectorMath.length(self.CData.velocityX, self.CData.velocityY)
         local gradientMax = 1000
 
         local r = velocity / gradientMax       --0.2
@@ -107,7 +97,7 @@ function particleFunctions:draw(i)
 
         love.graphics.setColor(r, g, b, 1)
 
-        love.graphics.circle("fill", self.x, self.y, self.radius)
+        love.graphics.circle("fill", self.CData.x, self.CData.y, self.radius)
     else
         local r = 0.2
         local g = 0.3
@@ -117,7 +107,7 @@ function particleFunctions:draw(i)
 
         local img = Settings.gradientImage
 
-        love.graphics.draw(img, self.x, self.y, 0, self.radius * 2 * Settings.drawRadius / img:getWidth(),
+        love.graphics.draw(img, self.CData.x, self.CData.y, 0, self.radius * 2 * Settings.drawRadius / img:getWidth(),
             self.radius * 2 * Settings.drawRadius / img:getHeight(),
             img:getWidth() / 2, img:getHeight() / 2)
     end
@@ -179,19 +169,22 @@ function pointAABBDistanceSqr(minX, minY, maxX, maxY, px, py)
 end
 
 function particleFunctions:resolveCollisions(width, height)
-    local minX, minY = self.x - self.radius, self.y - self.radius
-    local maxX, maxY = self.x + self.radius, self.y + self.radius
+    local minX, minY = self.CData.x - self.radius, self.CData.y - self.radius
+    local maxX, maxY = self.CData.x + self.radius, self.CData.y + self.radius
 
     if minX < 0 then
-        self.x = self.radius
-        self.velocityX = math.abs(self.velocityX) * self.restitution
+        self.CData.x = self.radius
+        self.CData.velocityX = math.abs(self.CData.velocityX) * self.restitution
     elseif maxX > width then
-        self.x = width - self.radius
-        self.velocityX = -math.abs(self.velocityX) * self.restitution
+        self.CData.x = width - self.radius
+        self.CData.velocityX = -math.abs(self.CData.velocityX) * self.restitution
     end
 
-    if maxY > height then
-        self.y = height - self.radius
-        self.velocityY = -math.abs(self.velocityY) * self.restitution
+    if minY < -2000 then
+        self.CData.y = self.radius
+        self.CData.velocityY = math.abs(self.CData.velocityY) * self.restitution
+    elseif maxY > height then
+        self.CData.y = height - self.radius
+        self.CData.velocityY = -math.abs(self.CData.velocityY) * self.restitution
     end
 end

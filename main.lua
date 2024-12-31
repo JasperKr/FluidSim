@@ -10,7 +10,7 @@ function love.load()
         mainCanvas = love.graphics.newCanvas(love.graphics.getWidth(), love.graphics.getHeight(), { format = "rgba32f" }),
         waterEffectShader = love.graphics.newShader("waterEffect.glsl"),
         substeps = 1,
-        fluidMass = 0.005,
+        fluidMass = 3,
         debugDraw = true,
         particleRadius = 3,
         chunkUpdateDelay = 60, -- ticks
@@ -28,7 +28,7 @@ function love.load()
     Settings.sharedPressureMultiplier = Settings.pressureMultiplier * 0.5
 
     love.physics.setMeter(Settings.scale)
-    Box2DWorld = love.physics.newWorld(0, 9.81 * Settings.scale, true)
+    Box2DWorld = love.physics.newWorld(0, 1.5 * Settings.scale, true)
 
     require("vectorMath")
 
@@ -69,6 +69,59 @@ function love.load()
     ---@type {[1]: hull}
     Hulls = {}
 
+    local height = -500
+
+    local shape = love.physics.newRectangleShape(1000, 100)
+    local body = love.physics.newBody(Box2DWorld, love.graphics.getWidth() / 2, 300 + height,
+        "dynamic")
+    local fixture = love.physics.newFixture(body, shape)
+
+    table.insert(Hulls, newHull(body, fixture, shape))
+
+    local shape1 = love.physics.newRectangleShape(50, 400)
+    local body1 = love.physics.newBody(Box2DWorld, love.graphics.getWidth() / 2 - 500,
+        300 - 200 + height,
+        "dynamic")
+    local fixture1 = love.physics.newFixture(body1, shape1)
+
+    love.physics.newWeldJoint(body, body1, love.graphics.getWidth() / 2 - 500, 300 - 100)
+
+    table.insert(Hulls, newHull(body1, fixture1, shape1))
+
+    local shape2 = love.physics.newRectangleShape(50, 400)
+    local body2 = love.physics.newBody(Box2DWorld, love.graphics.getWidth() / 2 + 500,
+        300 - 200 + height,
+        "dynamic")
+    local fixture2 = love.physics.newFixture(body2, shape2)
+
+    love.physics.newWeldJoint(body, body2, love.graphics.getWidth() / 2 + 500, 300 - 100 + height)
+
+    table.insert(Hulls, newHull(body2, fixture2, shape2))
+
+    local shape4 = love.physics.newRectangleShape(1000, 100)
+    local body4 = love.physics.newBody(Box2DWorld, love.graphics.getWidth() / 2, -100 + height,
+        "dynamic")
+    local fixture4 = love.physics.newFixture(body4, shape4)
+
+    love.physics.newWeldJoint(body1, body4, love.graphics.getWidth() / 2 - 500, -50 + height)
+    love.physics.newWeldJoint(body2, body4, love.graphics.getWidth() / 2 + 500, -50 + height)
+
+    table.insert(Hulls, newHull(body4, fixture4, shape4))
+
+    do -- create a floor and walls
+        local body = love.physics.newBody(Box2DWorld, 0, love.graphics.getHeight(), "static")
+        local shape = love.physics.newEdgeShape(0, 0, love.graphics.getWidth(), 0)
+        local fixture = love.physics.newFixture(body, shape)
+
+        local body = love.physics.newBody(Box2DWorld, 0, 0, "static")
+        local shape = love.physics.newEdgeShape(0, 0, 0, love.graphics.getHeight())
+        local fixture = love.physics.newFixture(body, shape)
+
+        local body = love.physics.newBody(Box2DWorld, love.graphics.getWidth(), 0, "static")
+        local shape = love.physics.newEdgeShape(0, 0, 0, love.graphics.getHeight())
+        local fixture = love.physics.newFixture(body, shape)
+    end
+
     Timer = {
         timings = {}
     }
@@ -76,6 +129,8 @@ function love.load()
     print("start thread")
     FluidSimulation.Thread.thread:start({ copyForThreadSend(Settings), FluidSimulation.Thread.send,
         FluidSimulation.Thread.receive, love.graphics.getWidth(), love.graphics.getHeight() })
+
+    Width, Height = love.graphics.getDimensions()
 end
 
 function copyForThreadSend(x, t)
@@ -100,11 +155,41 @@ local function addTiming(name)
     Timer.lastTime = love.timer.getTime()
 end
 
+local function updatePointers(data)
+    assert(data.type == "dataPointers")
+
+    sim.startIndicesData = data.indices
+    sim.spatialLookupData = data.lookup
+
+    sim.startIndices = ffi.cast("int32_t*", sim.startIndicesData:getFFIPointer())
+    sim.spatialLookup = ffi.cast("spatialLookupEntry*", sim.spatialLookupData:getFFIPointer())
+
+    sim.startIndicesLength = data.indicesLength
+    sim.spatialLookupLength = data.lookupLength
+
+    sim.startIndicesBufferSize = data.indicesMaxSize
+    sim.spatialLookupBufferSize = data.lookupMaxSize
+end
+
 function love.update(dt)
     dt = math.min(dt, 1 / 60)
     addTiming("start")
     Box2DWorld:update(dt)
     addTiming("box2d")
+
+    local msg = FluidSimulation.Thread.receive:pop()
+    while msg do
+        if msg.type == "dataPointers" then
+            updatePointers(msg)
+        elseif msg.type == "arrayLengths" then
+            sim.startIndicesLength = msg.indicesLength
+            sim.spatialLookupLength = msg.lookupLength
+        else
+            print("Unknown message type: " .. msg.type)
+        end
+
+        msg = FluidSimulation.Thread.receive:pop()
+    end
 
     sim.update(dt, false, love.graphics.getWidth(), love.graphics.getHeight())
     addTiming("fluid")
@@ -120,8 +205,8 @@ function love.update(dt)
         if love.mouse.isDown(1, 2) then
             for i, particle in ipairs(Particles) do
                 local force = updateMouseForces(500, love.mouse.isDown(2) and -5000 or 5000, particle)
-                particle.velocityX = particle.velocityX + force.x * dt
-                particle.velocityY = particle.velocityY + force.y * dt
+                particle.CData.velocityX = particle.CData.velocityX + force.x * dt
+                particle.CData.velocityY = particle.CData.velocityY + force.y * dt
             end
         end
     end
@@ -183,7 +268,7 @@ function updateMouseForces(radius, strength, particle)
     local mousePos = vec2(love.mouse.getPosition())
 
     local force = vec2()
-    local offset = mousePos - vec2(particle.x, particle.y)
+    local offset = mousePos - vec2(particle.CData.x, particle.CData.y)
 
     local distSqr = offset:lengthSqr()
 
@@ -193,7 +278,7 @@ function updateMouseForces(radius, strength, particle)
 
         local centerT = 1 - dist / radius
 
-        force = (dir * strength - vec2(particle.velocityX, particle.velocityY)) * centerT
+        force = (dir * strength - vec2(particle.CData.velocityX, particle.CData.velocityY)) * centerT
     end
 
     return force
